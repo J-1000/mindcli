@@ -12,7 +12,7 @@ A fast, private TUI for personal knowledge management with AI-powered search.
 
 ## Status
 
-Phase 1 complete - Basic TUI shell with database storage.
+Phase 2 complete - Markdown indexing with Bleve full-text search.
 
 ## Installation
 
@@ -117,8 +117,8 @@ mindcli/
 - [x] Configuration system
 - [x] SQLite storage layer
 - [x] Basic TUI shell
-- [ ] Markdown indexing
-- [ ] Full-text search (Bleve)
+- [x] Markdown indexing
+- [x] Full-text search (Bleve)
 - [ ] Semantic search (embeddings)
 - [ ] PDF support
 - [ ] Email integration

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 	"github.com/jankowtf/mindcli/internal/tui/styles"
 )
@@ -25,8 +26,9 @@ const (
 
 // Model is the main application model.
 type Model struct {
-	// Database
-	db *storage.DB
+	// Database and search
+	db     *storage.DB
+	search *search.BleveIndex
 
 	// UI Components
 	searchInput textinput.Model
@@ -48,8 +50,8 @@ type Model struct {
 	keys KeyMap
 }
 
-// New creates a new Model with the given database.
-func New(db *storage.DB) Model {
+// New creates a new Model with the given database and search index.
+func New(db *storage.DB, searchIndex *search.BleveIndex) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -63,6 +65,7 @@ func New(db *storage.DB) Model {
 
 	return Model{
 		db:          db,
+		search:      searchIndex,
 		searchInput: ti,
 		preview:     vp,
 		panel:       PanelSearch,
@@ -90,10 +93,31 @@ func (m Model) loadDocuments() tea.Cmd {
 	}
 }
 
-// searchDocuments searches the database.
+// searchDocuments searches using Bleve and fetches documents from the database.
 func (m Model) searchDocuments(query string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
+
+		// Use Bleve if available, fall back to SQLite LIKE search
+		if m.search != nil {
+			results, err := m.search.Search(ctx, query, 50)
+			if err != nil {
+				return errMsg{err}
+			}
+
+			// Fetch full documents from database
+			docs := make([]*storage.Document, 0, len(results))
+			for _, r := range results {
+				doc, err := m.db.GetDocument(ctx, r.ID)
+				if err != nil {
+					continue // Skip documents that can't be found
+				}
+				docs = append(docs, doc)
+			}
+			return searchResultsMsg{docs}
+		}
+
+		// Fallback to simple SQLite search
 		docs, err := m.db.SearchDocuments(ctx, query, 50)
 		if err != nil {
 			return errMsg{err}
