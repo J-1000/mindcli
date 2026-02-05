@@ -1,5 +1,6 @@
 # Binaries
-mindcli
+/mindcli
+bin/mindcli
 *.exe
 *.exe~
 *.dll
