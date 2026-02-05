@@ -29,14 +29,17 @@ make build
 ## Usage
 
 ```bash
+# Index your notes (run this first)
+mindcli index
+
+# Index specific paths
+mindcli index -paths ~/notes
+
 # Start the TUI
 mindcli
 
-# Index a directory (coming soon)
-mindcli index ~/notes
-
-# Search from command line (coming soon)
-mindcli search "my query"
+# Show help
+mindcli help
 ```
 
 ## Keyboard Shortcuts
@@ -104,8 +107,10 @@ mindcli/
 │   │   ├── app.go        # Main Bubble Tea model
 │   │   ├── keys.go       # Keybindings
 │   │   └── styles/       # Lip Gloss styles
-│   ├── index/            # Indexing pipeline (planned)
-│   ├── query/            # Search engine (planned)
+│   ├── index/            # Indexing pipeline
+│   │   ├── indexer.go    # Concurrent indexer with worker pool
+│   │   └── sources/      # Document sources (markdown, etc.)
+│   ├── search/           # Full-text search (Bleve)
 │   └── embeddings/       # Embedding providers (planned)
 └── pkg/
     └── chunker/          # Text chunking (planned)
