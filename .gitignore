@@ -45,3 +45,6 @@ config.local.yaml
 # Temporary files
 tmp/
 .tmp/
+
+# Development progress (local only)
+progress.txt
