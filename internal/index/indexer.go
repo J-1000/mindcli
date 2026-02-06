@@ -64,6 +64,14 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	// Add email source if enabled
+	if cfg.Sources.Email.Enabled {
+		srcs = append(srcs, sources.NewEmailSource(
+			cfg.Sources.Email.Paths,
+			cfg.Sources.Email.Formats,
+		))
+	}
+
 	return &Indexer{
 		db:       db,
 		search:   searchIndex,
