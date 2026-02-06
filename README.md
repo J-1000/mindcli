@@ -2,17 +2,17 @@
 
 A fast, private TUI for personal knowledge management with AI-powered search.
 
+Search across your notes, PDFs, emails, browser history, and clipboard — all from a single keyboard-driven interface. Everything stays local.
+
 ## Features
 
-- **Local-first**: All data stays on your machine
-- **Multi-source indexing**: Notes, PDFs, emails, clipboard, browser history
-- **Semantic search**: Natural language queries powered by embeddings
-- **Beautiful TUI**: Keyboard-driven interface with live preview
-- **Fast**: Concurrent indexing with Go
-
-## Status
-
-Phase 2 complete - Markdown indexing with Bleve full-text search.
+- **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), browser history (Chrome/Firefox/Safari), clipboard
+- **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
+- **Local AI** — Embeddings and LLM-powered answers via Ollama (no API keys, no cloud)
+- **Beautiful TUI** — Three-panel Bubble Tea interface with live preview
+- **Fast** — Concurrent worker pool indexing, incremental updates, content-hash caching
+- **File watcher** — Real-time re-indexing via fsnotify with debouncing
+- **Private** — All data stays on your machine, password detection for clipboard
 
 ## Installation
 
@@ -26,20 +26,31 @@ cd mindcli
 make build
 ```
 
+**Requirements:** Go 1.21+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
+
+## Quick Start
+
+```bash
+# 1. Initialize config (optional — sensible defaults are used otherwise)
+mindcli config
+
+# 2. Index your documents
+mindcli index
+
+# 3. Launch the TUI
+mindcli
+```
+
 ## Usage
 
 ```bash
-# Index your notes (run this first)
-mindcli index
-
-# Index specific paths
-mindcli index -paths ~/notes
-
-# Start the TUI
-mindcli
-
-# Show help
-mindcli help
+mindcli                          # Start the TUI
+mindcli index                    # Index all configured sources
+mindcli index -paths ~/notes     # Index specific paths
+mindcli index -watch             # Index then watch for changes
+mindcli watch                    # Watch directories for changes
+mindcli config                   # Initialize default config file
+mindcli help                     # Show help
 ```
 
 ## Keyboard Shortcuts
@@ -48,14 +59,21 @@ mindcli help
 |-----|--------|
 | `/` | Focus search |
 | `Enter` | Execute search / Select |
-| `j/k` or `Arrow` | Navigate results |
-| `Tab` | Cycle panels |
+| `j/k` or `Up/Down` | Navigate results |
+| `Tab` / `Shift+Tab` | Cycle panels |
+| `o` | Open in external app |
+| `y` | Copy file path to clipboard |
+| `r` | Refresh document list |
+| `g` / `G` | Go to start / end of results |
+| `Ctrl+u` / `Ctrl+d` | Half page up / down (preview) |
+| `PgUp` / `PgDn` | Page up / down |
+| `Esc` | Clear search / Cancel |
 | `?` | Toggle help |
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 
 ## Configuration
 
-MindCLI looks for configuration in `~/.config/mindcli/config.yaml`:
+MindCLI looks for `~/.config/mindcli/config.yaml`. Run `mindcli config` to generate a default config file.
 
 ```yaml
 sources:
@@ -63,73 +81,96 @@ sources:
     enabled: true
     paths:
       - ~/notes
+    extensions: [".md", ".txt"]
+    ignore: ["node_modules", ".git", ".obsidian"]
+
+  pdf:
+    enabled: true
+    paths:
       - ~/Documents
 
+  email:
+    enabled: false
+    paths: []
+    formats: ["mbox", "maildir"]
+
+  browser:
+    enabled: true
+    browsers: ["chrome", "firefox", "safari"]
+    include_content: false
+
+  clipboard:
+    enabled: true
+    retention_days: 30
+    skip_passwords: true
+
 embeddings:
-  provider: ollama
+  provider: ollama       # or "openai"
   model: nomic-embed-text
+  ollama_url: http://localhost:11434
+
+search:
+  hybrid_weight: 0.5    # 0 = pure BM25, 1 = pure vector
+  results_limit: 50
+
+indexing:
+  workers: 4
+  watch: true
+
+storage:
+  path: ~/.local/share/mindcli
 ```
+
+## How Search Works
+
+MindCLI uses a hybrid search approach:
+
+1. **BM25** (via Bleve) for keyword matching
+2. **Vector similarity** (via HNSW) for semantic understanding
+3. **Reciprocal Rank Fusion** merges both result sets into a single ranked list
+
+When Ollama is not available, search gracefully falls back to BM25-only mode.
 
 ## Development
 
-### Prerequisites
-
-- Go 1.21+
-- Make (optional)
-
-### Building
-
 ```bash
-# Build binary
-make build
-
-# Run tests
-make test
-
-# Run with race detector
-make test-race
-
-# Generate coverage report
-make test-coverage
+make build           # Build binary to bin/mindcli
+make run             # Build and run
+make test            # Run tests
+make test-race       # Run with race detector
+make test-coverage   # Generate coverage report
+make lint            # Run golangci-lint
+make fmt             # Format code
+make clean           # Clean build artifacts
 ```
 
 ### Project Structure
 
 ```
 mindcli/
-├── cmd/mindcli/          # Main entry point
+├── cmd/mindcli/             # CLI entry point
 ├── internal/
-│   ├── config/           # Configuration management
-│   ├── storage/          # SQLite database layer
-│   │   ├── models.go     # Document, Chunk, SearchResult
-│   │   └── sqlite.go     # Database operations
-│   ├── tui/              # Terminal UI
-│   │   ├── app.go        # Main Bubble Tea model
-│   │   ├── keys.go       # Keybindings
-│   │   └── styles/       # Lip Gloss styles
-│   ├── index/            # Indexing pipeline
-│   │   ├── indexer.go    # Concurrent indexer with worker pool
-│   │   └── sources/      # Document sources (markdown, etc.)
-│   ├── search/           # Full-text search (Bleve)
-│   └── embeddings/       # Embedding providers (planned)
-└── pkg/
-    └── chunker/          # Text chunking (planned)
+│   ├── config/              # YAML configuration
+│   ├── embeddings/          # Ollama embedder + content-hash cache
+│   ├── index/               # Indexing pipeline
+│   │   ├── indexer.go       # Worker pool orchestrator
+│   │   ├── watcher.go       # fsnotify file watcher
+│   │   └── sources/         # Source implementations
+│   │       ├── source.go    # Source interface
+│   │       ├── markdown.go  # Markdown/notes parser
+│   │       ├── pdf.go       # PDF text extraction
+│   │       ├── email.go     # Mbox/Maildir/emlx parser
+│   │       ├── browser.go   # Chrome/Firefox/Safari history
+│   │       └── clipboard.go # Clipboard with password detection
+│   ├── query/               # Hybrid search + LLM query parser
+│   ├── search/              # Bleve full-text search
+│   ├── storage/             # SQLite + HNSW vector store
+│   └── tui/                 # Bubble Tea interface
+│       ├── app.go           # Main model + three-panel layout
+│       ├── keys.go          # Keybindings
+│       └── styles/          # Lip Gloss styling
+└── pkg/chunker/             # Sliding window text chunker
 ```
-
-## Roadmap
-
-- [x] Project setup
-- [x] Configuration system
-- [x] SQLite storage layer
-- [x] Basic TUI shell
-- [x] Markdown indexing
-- [x] Full-text search (Bleve)
-- [ ] Semantic search (embeddings)
-- [ ] PDF support
-- [ ] Email integration
-- [ ] Browser history
-- [ ] Clipboard tracking
-- [ ] LLM query understanding
 
 ## License
 
