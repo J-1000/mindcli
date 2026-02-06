@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds all configuration for MindCLI.
@@ -151,6 +153,50 @@ func (c *Config) Validate() error {
 		return errors.New("embeddings.provider must be 'ollama' or 'openai'")
 	}
 	return nil
+}
+
+// Load loads configuration from the YAML file, falling back to defaults
+// for any missing values.
+func Load() (*Config, error) {
+	cfg := Default()
+
+	configPath, err := ConfigPath()
+	if err != nil {
+		return cfg, nil // Use defaults if we can't find config dir
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil // No config file, use defaults
+		}
+		return nil, err
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// Save writes the configuration to the YAML file.
+func (c *Config) Save() error {
+	if err := EnsureConfigDir(); err != nil {
+		return err
+	}
+
+	configPath, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(configPath, data, 0644)
 }
 
 // ConfigDir returns the directory where config files are stored.

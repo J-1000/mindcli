@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jankowtf/mindcli/internal/config"
@@ -28,12 +30,17 @@ func run() error {
 	// Parse command line
 	indexCmd := flag.NewFlagSet("index", flag.ExitOnError)
 	indexPaths := indexCmd.String("paths", "", "Comma-separated paths to index (overrides config)")
+	indexWatch := indexCmd.Bool("watch", false, "Watch for file changes after indexing")
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "index":
 			indexCmd.Parse(os.Args[2:])
-			return runIndex(*indexPaths)
+			return runIndex(*indexPaths, *indexWatch)
+		case "watch":
+			return runWatch()
+		case "config":
+			return runConfigInit()
 		case "help", "-h", "--help":
 			printUsage()
 			return nil
@@ -50,24 +57,37 @@ func printUsage() {
 Usage:
   mindcli              Start the TUI
   mindcli index        Index configured sources
+  mindcli watch        Watch for file changes and re-index
+  mindcli config       Initialize config file
   mindcli help         Show this help
 
 Index options:
   -paths string        Comma-separated paths to index (overrides config)
+  -watch               Watch for file changes after indexing
 
 Examples:
   mindcli                          # Start TUI
   mindcli index                    # Index all configured sources
-  mindcli index -paths ~/notes     # Index specific paths`)
+  mindcli index -paths ~/notes     # Index specific paths
+  mindcli index -watch             # Index then watch for changes`)
+}
+
+func loadConfig() (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
 }
 
 func runTUI() error {
-	// Load configuration
-	cfg := config.Default()
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
 	}
-
 	// Ensure data directory exists
 	dataDir, err := cfg.DataDir()
 	if err != nil {
@@ -127,11 +147,10 @@ func runTUI() error {
 	return nil
 }
 
-func runIndex(pathsOverride string) error {
-	// Load configuration
-	cfg := config.Default()
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
+func runIndex(pathsOverride string, watch bool) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
 	}
 
 	// Override paths if provided
@@ -221,6 +240,92 @@ func runIndex(pathsOverride string) error {
 		fmt.Printf("  Vectors:       %d\n", vectors.Len())
 	}
 
+	// Start file watching if requested.
+	if watch {
+		return startWatching(indexer, cfg)
+	}
+
+	return nil
+}
+
+func runWatch() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return err
+	}
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(dataDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		return err
+	}
+	defer searchIndex.Close()
+
+	indexer := index.NewIndexer(db, searchIndex, nil, nil, cfg)
+	return startWatching(indexer, cfg)
+}
+
+func startWatching(indexer *index.Indexer, cfg *config.Config) error {
+	var paths []string
+	if cfg.Sources.Markdown.Enabled {
+		paths = append(paths, cfg.Sources.Markdown.Paths...)
+	}
+	if cfg.Sources.PDF.Enabled {
+		paths = append(paths, cfg.Sources.PDF.Paths...)
+	}
+
+	if len(paths) == 0 {
+		return fmt.Errorf("no paths to watch")
+	}
+
+	watcher, err := index.NewWatcher(indexer, paths)
+	if err != nil {
+		return fmt.Errorf("creating watcher: %w", err)
+	}
+
+	fmt.Printf("Watching %d directories for changes (Ctrl+C to stop)...\n", len(paths))
+	for _, p := range paths {
+		fmt.Printf("  %s\n", p)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt signal.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nStopping watcher...")
+		cancel()
+	}()
+
+	return watcher.Start(ctx)
+}
+
+func runConfigInit() error {
+	cfg := config.Default()
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	configPath, _ := config.ConfigPath()
+	fmt.Printf("Config written to: %s\n", configPath)
 	return nil
 }
 
