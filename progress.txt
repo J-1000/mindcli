@@ -125,15 +125,30 @@
   - [x] YAML config file loading (~/.config/mindcli/config.yaml)
   - [x] `config` command to initialize default config
   - [x] Fallback to sensible defaults when no config file exists
+  - [x] Configurable LLM model (llm_model field)
 - [x] CLI
   - [x] `index` command with -paths and -watch flags
   - [x] `watch` command for standalone file watching
+  - [x] `search` command for non-TUI search results
+  - [x] `ask` command for RAG-style question answering
   - [x] `config` command for config initialization
+  - [x] `version` command with build-time ldflags
   - [x] `help` command with usage examples
-- [x] TUI Actions
+- [x] TUI Integration
+  - [x] Query parser wired into TUI search (source/time filter extraction)
+  - [x] LLM answer generation in preview panel for answer/summarize queries
   - [x] 'o' to open in external app (macOS/Linux)
   - [x] 'y' to copy file path to clipboard
   - [x] 'r' to refresh document list
+- [x] Distribution
+  - [x] Version info via ldflags (version, commit, date)
+  - [x] Goreleaser config for cross-platform releases
+  - [x] GitHub Actions CI workflow (test + lint)
+  - [x] GitHub Actions release workflow (goreleaser)
+- [x] Documentation
+  - [x] Comprehensive README with full feature list
+  - [x] Configuration reference
+  - [x] Keyboard shortcuts table
 - [x] Testing
   - [x] All 10 packages pass tests
   - [x] Unit tests for all core components
