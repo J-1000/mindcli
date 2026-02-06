@@ -154,5 +154,9 @@
   - [x] Configuration reference
   - [x] Keyboard shortcuts table
 - [x] Testing
-  - [x] All 10 packages pass tests
+  - [x] All 11 packages pass tests (including cmd/mindcli)
   - [x] Unit tests for all core components
+  - [x] TUI tests: min(), showAnswer(), searchResultsMsg with answer/parsed/filters
+  - [x] Config tests: LLMModel default, YAML round-trip
+  - [x] CLI tests: version vars, printUsage, truncatePath, progress reporter
+  - [x] Integration tests: end-to-end search with temp DB+Bleve, source filter, Ollama fallback
