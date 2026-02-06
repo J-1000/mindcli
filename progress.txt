@@ -109,5 +109,31 @@
   - [x] Watch new subdirectories automatically
 - [x] Watcher skips .git, node_modules, .obsidian
 
-## Phase 9: LLM Integration [PENDING]
-## Phase 10: Polish [PENDING]
+## Phase 9: LLM Integration [COMPLETE]
+- [x] Query Parser
+  - [x] Intent detection (search, summarize, answer)
+  - [x] Source filter extraction ("in my emails", "in pdfs")
+  - [x] Time reference extraction ("last week", "last month")
+  - [x] Query term cleanup
+- [x] Ollama Text Generation
+  - [x] LLMClient for /api/generate endpoint
+  - [x] RAG-style answer generation from search context
+  - [x] Configurable model selection
+
+## Phase 10: Polish [COMPLETE]
+- [x] Configuration
+  - [x] YAML config file loading (~/.config/mindcli/config.yaml)
+  - [x] `config` command to initialize default config
+  - [x] Fallback to sensible defaults when no config file exists
+- [x] CLI
+  - [x] `index` command with -paths and -watch flags
+  - [x] `watch` command for standalone file watching
+  - [x] `config` command for config initialization
+  - [x] `help` command with usage examples
+- [x] TUI Actions
+  - [x] 'o' to open in external app (macOS/Linux)
+  - [x] 'y' to copy file path to clipboard
+  - [x] 'r' to refresh document list
+- [x] Testing
+  - [x] All 10 packages pass tests
+  - [x] Unit tests for all core components
