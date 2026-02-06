@@ -11,6 +11,7 @@ import (
 	"github.com/jankowtf/mindcli/internal/config"
 	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index"
+	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 	"github.com/jankowtf/mindcli/internal/tui"
@@ -93,8 +94,30 @@ func runTUI() error {
 	}
 	defer searchIndex.Close()
 
+	// Set up hybrid search (optional - degrades gracefully)
+	var hybrid *query.HybridSearcher
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	if _, err := os.Stat(vectorPath); err == nil {
+		// Vector store exists, try to load it.
+		vectors, err := storage.NewVectorStore(vectorPath)
+		if err == nil && vectors.Len() > 0 {
+			defer vectors.Close()
+
+			ollamaEmb := embeddings.NewOllamaEmbedder(
+				cfg.Embeddings.OllamaURL,
+				cfg.Embeddings.Model,
+			)
+			cachePath := filepath.Join(dataDir, "embeddings.db")
+			cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
+			if err == nil {
+				defer cached.Close()
+				hybrid = query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
+			}
+		}
+	}
+
 	// Create and run the TUI
-	model := tui.New(db, searchIndex)
+	model := tui.New(db, searchIndex, hybrid)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

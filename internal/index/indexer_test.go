@@ -93,7 +93,7 @@ A note in a subdirectory.
 	}
 
 	// Create indexer with progress tracking
-	indexer := NewIndexer(db, searchIdx, cfg)
+	indexer := NewIndexer(db, searchIdx, nil, nil, cfg)
 
 	var progress testProgressReporter
 	indexer.SetProgressReporter(&progress)
@@ -190,7 +190,7 @@ func TestIndexer_IncrementalIndexing(t *testing.T) {
 		Indexing: config.IndexingConfig{Workers: 1},
 	}
 
-	indexer := NewIndexer(db, searchIdx, cfg)
+	indexer := NewIndexer(db, searchIdx, nil, nil, cfg)
 	ctx := context.Background()
 
 	// First index
@@ -263,7 +263,7 @@ func TestIndexer_Cancellation(t *testing.T) {
 		Indexing: config.IndexingConfig{Workers: 1},
 	}
 
-	indexer := NewIndexer(db, searchIdx, cfg)
+	indexer := NewIndexer(db, searchIdx, nil, nil, cfg)
 
 	// Cancel after short delay
 	ctx, cancel := context.WithCancel(context.Background())

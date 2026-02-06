@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 	"github.com/jankowtf/mindcli/internal/tui/styles"
@@ -29,6 +30,7 @@ type Model struct {
 	// Database and search
 	db     *storage.DB
 	search *search.BleveIndex
+	hybrid *query.HybridSearcher
 
 	// UI Components
 	searchInput textinput.Model
@@ -51,7 +53,8 @@ type Model struct {
 }
 
 // New creates a new Model with the given database and search index.
-func New(db *storage.DB, searchIndex *search.BleveIndex) Model {
+// The hybrid searcher is optional; if nil, BM25-only search is used.
+func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -66,6 +69,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex) Model {
 	return Model{
 		db:          db,
 		search:      searchIndex,
+		hybrid:      hybrid,
 		searchInput: ti,
 		preview:     vp,
 		panel:       PanelSearch,
@@ -93,24 +97,36 @@ func (m Model) loadDocuments() tea.Cmd {
 	}
 }
 
-// searchDocuments searches using Bleve and fetches documents from the database.
-func (m Model) searchDocuments(query string) tea.Cmd {
+// searchDocuments searches using hybrid search (BM25 + vector) when available.
+func (m Model) searchDocuments(q string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
+		// Use hybrid search if available
+		if m.hybrid != nil {
+			results, err := m.hybrid.Search(ctx, q, 50)
+			if err != nil {
+				return errMsg{err}
+			}
+			docs := make([]*storage.Document, 0, len(results))
+			for _, r := range results {
+				docs = append(docs, r.Document)
+			}
+			return searchResultsMsg{docs}
+		}
+
 		// Use Bleve if available, fall back to SQLite LIKE search
 		if m.search != nil {
-			results, err := m.search.Search(ctx, query, 50)
+			results, err := m.search.Search(ctx, q, 50)
 			if err != nil {
 				return errMsg{err}
 			}
 
-			// Fetch full documents from database
 			docs := make([]*storage.Document, 0, len(results))
 			for _, r := range results {
 				doc, err := m.db.GetDocument(ctx, r.ID)
 				if err != nil {
-					continue // Skip documents that can't be found
+					continue
 				}
 				docs = append(docs, doc)
 			}
@@ -118,7 +134,7 @@ func (m Model) searchDocuments(query string) tea.Cmd {
 		}
 
 		// Fallback to simple SQLite search
-		docs, err := m.db.SearchDocuments(ctx, query, 50)
+		docs, err := m.db.SearchDocuments(ctx, q, 50)
 		if err != nil {
 			return errMsg{err}
 		}
