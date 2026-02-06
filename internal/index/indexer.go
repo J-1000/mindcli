@@ -72,6 +72,13 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	// Add browser history source if enabled
+	if cfg.Sources.Browser.Enabled {
+		srcs = append(srcs, sources.NewBrowserSource(
+			cfg.Sources.Browser.Browsers,
+		))
+	}
+
 	return &Indexer{
 		db:       db,
 		search:   searchIndex,
