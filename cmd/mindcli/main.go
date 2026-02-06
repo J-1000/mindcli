@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jankowtf/mindcli/internal/config"
+	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
@@ -141,8 +142,40 @@ func runIndex(pathsOverride string) error {
 	}
 	defer searchIndex.Close()
 
+	// Set up vector store and embedder (optional - fails gracefully)
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	vectors, err := storage.NewVectorStore(vectorPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
+		vectors = nil
+	}
+	if vectors != nil {
+		defer vectors.Close()
+	}
+
+	var embedder embeddings.Embedder
+	if cfg.Embeddings.Provider == "ollama" {
+		ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
+		cachePath := filepath.Join(dataDir, "embeddings.db")
+		cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
+			embedder = ollamaEmb
+		} else {
+			defer cached.Close()
+			embedder = cached
+		}
+
+		// Test connectivity by checking if Ollama is reachable.
+		ctx := context.Background()
+		if _, err := ollamaEmb.Embed(ctx, "test"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
+			embedder = nil
+		}
+	}
+
 	// Create indexer
-	indexer := index.NewIndexer(db, searchIndex, cfg)
+	indexer := index.NewIndexer(db, searchIndex, vectors, embedder, cfg)
 	indexer.SetProgressReporter(&consoleProgressReporter{})
 
 	// Run indexing
@@ -152,10 +185,18 @@ func runIndex(pathsOverride string) error {
 		return fmt.Errorf("indexing: %w", err)
 	}
 
+	// Save vector index to disk.
+	if err := indexer.SaveVectors(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: saving vectors: %v\n", err)
+	}
+
 	fmt.Printf("\nIndexing complete:\n")
 	fmt.Printf("  Total files:   %d\n", stats.TotalFiles)
 	fmt.Printf("  Indexed:       %d\n", stats.IndexedFiles)
 	fmt.Printf("  Errors:        %d\n", stats.Errors)
+	if embedder != nil && vectors != nil {
+		fmt.Printf("  Vectors:       %d\n", vectors.Len())
+	}
 
 	return nil
 }

@@ -8,15 +8,19 @@ import (
 	"sync/atomic"
 
 	"github.com/jankowtf/mindcli/internal/config"
+	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index/sources"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/jankowtf/mindcli/pkg/chunker"
 )
 
 // Indexer orchestrates document indexing from various sources.
 type Indexer struct {
 	db       *storage.DB
 	search   *search.BleveIndex
+	vectors  *storage.VectorStore
+	embedder embeddings.Embedder
 	sources  []sources.Source
 	workers  int
 	progress ProgressReporter
@@ -39,7 +43,8 @@ type Stats struct {
 }
 
 // NewIndexer creates a new indexer with the given configuration.
-func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, cfg *config.Config) *Indexer {
+// The vectors and embedder parameters are optional; if nil, semantic indexing is skipped.
+func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage.VectorStore, embedder embeddings.Embedder, cfg *config.Config) *Indexer {
 	var srcs []sources.Source
 
 	// Add markdown source if enabled
@@ -52,10 +57,12 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, cfg *config.Conf
 	}
 
 	return &Indexer{
-		db:      db,
-		search:  searchIndex,
-		sources: srcs,
-		workers: cfg.Indexing.Workers,
+		db:       db,
+		search:   searchIndex,
+		vectors:  vectors,
+		embedder: embedder,
+		sources:  srcs,
+		workers:  cfg.Indexing.Workers,
 	}
 }
 
@@ -178,6 +185,11 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
+				// Generate embeddings if available
+				if idx.vectors != nil && idx.embedder != nil {
+					idx.embedDocument(ctx, doc)
+				}
+
 				atomic.AddInt64(&indexed, 1)
 			}
 		}()
@@ -226,6 +238,10 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 					return fmt.Errorf("indexing: %w", err)
 				}
 
+				if idx.vectors != nil && idx.embedder != nil {
+					idx.embedDocument(ctx, doc)
+				}
+
 				return nil
 			}
 		}
@@ -252,6 +268,58 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 		return fmt.Errorf("removing from database: %w", err)
 	}
 
+	return nil
+}
+
+// embedDocument chunks a document, generates embeddings, and stores them.
+func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
+	// Delete old chunks and vectors for this document.
+	idx.db.DeleteChunksByDocument(ctx, doc.ID)
+
+	// Chunk the document content.
+	chunks := chunker.Split(doc.Content, chunker.DefaultOptions())
+	if len(chunks) == 0 {
+		return
+	}
+
+	// Collect chunk texts and keys.
+	texts := make([]string, len(chunks))
+	keys := make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.Content
+		keys[i] = fmt.Sprintf("%s:%d", doc.ID, i)
+	}
+
+	// Generate embeddings in batch.
+	embeds, err := idx.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		if idx.progress != nil {
+			idx.progress.OnError(string(doc.Source), doc.Path,
+				fmt.Errorf("generating embeddings: %w", err))
+		}
+		return
+	}
+
+	// Store chunks in SQLite and vectors in HNSW.
+	for i, c := range chunks {
+		chunk := &storage.Chunk{
+			ID:         keys[i],
+			DocumentID: doc.ID,
+			Content:    c.Content,
+			StartPos:   c.StartPos,
+			EndPos:     c.EndPos,
+		}
+		idx.db.InsertChunk(ctx, chunk)
+	}
+
+	idx.vectors.AddBatch(keys, embeds)
+}
+
+// SaveVectors persists the vector store to disk. Call after indexing completes.
+func (idx *Indexer) SaveVectors() error {
+	if idx.vectors != nil {
+		return idx.vectors.Save()
+	}
 	return nil
 }
 
