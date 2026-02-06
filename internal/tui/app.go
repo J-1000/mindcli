@@ -3,8 +3,11 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -296,9 +299,52 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.updatePreviewContent()
 		}
 		return m, nil
+
+	case key.Matches(msg, m.keys.Open):
+		if m.cursor < len(m.results) {
+			doc := m.results[m.cursor]
+			if doc.Path != "" && !strings.HasPrefix(doc.Path, "clipboard:") {
+				go openFile(doc.Path)
+				m.statusMsg = "Opening: " + doc.Path
+				m.statusIsErr = false
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Copy):
+		if m.cursor < len(m.results) {
+			doc := m.results[m.cursor]
+			if err := clipboard.WriteAll(doc.Path); err != nil {
+				m.statusMsg = "Copy failed: " + err.Error()
+				m.statusIsErr = true
+			} else {
+				m.statusMsg = "Copied: " + doc.Path
+				m.statusIsErr = false
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Refresh):
+		m.statusMsg = "Refreshing..."
+		m.statusIsErr = false
+		return m, m.loadDocuments()
 	}
 
 	return m, nil
+}
+
+// openFile opens a file with the system's default application.
+func openFile(path string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "linux":
+		cmd = exec.Command("xdg-open", path)
+	default:
+		return
+	}
+	cmd.Run()
 }
 
 func (m Model) updatePreview(msg tea.KeyMsg) (Model, tea.Cmd) {
