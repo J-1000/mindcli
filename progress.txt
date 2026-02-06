@@ -1,0 +1,57 @@
+# MindCLI Development Progress
+
+## Phase 1: Foundation [COMPLETE]
+- [x] Project setup (Go module, directory structure, dependencies)
+- [x] Basic TUI (Bubble Tea model, three-panel layout, keybindings, styling)
+- [x] SQLite storage (documents table schema, CRUD operations)
+
+## Phase 2: Markdown Indexing [COMPLETE]
+- [x] File Scanner
+  - [x] Recursive directory walker
+  - [x] File type detection
+  - [x] Modification time tracking (incremental indexing)
+- [x] Markdown Parser
+  - [x] Extract frontmatter (YAML)
+  - [x] Parse headings, links, tags
+  - [x] Preserve structure for preview
+- [x] Full-Text Search
+  - [x] Integrate Bleve for FTS
+  - [x] Implement BM25 ranking
+  - [x] Wire search to TUI
+- [x] Concurrent Indexing
+  - [x] Worker pool with configurable size
+  - [x] Progress reporting to console
+  - [x] Graceful cancellation
+
+## Phase 3: Semantic Search [COMPLETE]
+- [x] Text Chunker
+  - [x] Sliding window chunking with semantic boundaries (paragraphs, sentences)
+  - [x] Configurable chunk size and overlap
+  - [x] Position tracking for chunk-to-document mapping
+- [x] Embedding Integration
+  - [x] Embedder interface (Embed, EmbedBatch, Dimensions)
+  - [x] Ollama HTTP client for local embedding generation
+  - [x] Content-hash based SQLite embedding cache
+  - [x] Graceful degradation when Ollama unavailable
+- [x] Vector Storage
+  - [x] HNSW index via coder/hnsw with cosine distance
+  - [x] Disk persistence via SavedGraph
+  - [x] Thread-safe add/delete/search operations
+  - [x] Batch vector insertion
+- [x] Hybrid Search
+  - [x] Reciprocal Rank Fusion (RRF) combining BM25 + vector scores
+  - [x] Configurable hybrid weight (0 = pure BM25, 1 = pure vector)
+  - [x] Parallel BM25 and vector search execution
+  - [x] Fallback to BM25-only when vectors unavailable
+- [x] Pipeline Integration
+  - [x] Chunking and embedding during indexing
+  - [x] Hybrid search wired to TUI
+  - [x] Vector store save on index completion
+
+## Phase 4: PDF Support [PENDING]
+## Phase 5: Email Integration [PENDING]
+## Phase 6: Browser History [PENDING]
+## Phase 7: Clipboard History [PENDING]
+## Phase 8: File Watcher [PENDING]
+## Phase 9: LLM Integration [PENDING]
+## Phase 10: Polish [PENDING]
