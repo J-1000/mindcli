@@ -79,6 +79,15 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	// Add clipboard source if enabled
+	if cfg.Sources.Clipboard.Enabled {
+		srcs = append(srcs, sources.NewClipboardSource(
+			db,
+			cfg.Sources.Clipboard.RetentionDays,
+			cfg.Sources.Clipboard.SkipPasswords,
+		))
+	}
+
 	return &Indexer{
 		db:       db,
 		search:   searchIndex,
