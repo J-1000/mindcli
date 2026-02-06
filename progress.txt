@@ -59,9 +59,55 @@
   - [x] Reuses existing Scanner for file discovery
   - [x] Wired into indexer via config toggle
 
-## Phase 5: Email Integration [PENDING]
-## Phase 6: Browser History [PENDING]
-## Phase 7: Clipboard History [PENDING]
-## Phase 8: File Watcher [PENDING]
+## Phase 5: Email Integration [COMPLETE]
+- [x] Email Parsers
+  - [x] Mbox format parsing (split by "From " lines)
+  - [x] Maildir format (single .eml files)
+  - [x] Apple Mail .emlx files (with plist stripping)
+- [x] Email Processing
+  - [x] Parse headers (from, to, subject, date)
+  - [x] Extract body (plain text, MIME multipart)
+  - [x] HTML stripping for HTML-only emails
+  - [x] MIME header decoding
+- [x] Integration
+  - [x] EmailSource implements Source interface
+  - [x] Wired into indexer via config toggle
+
+## Phase 6: Browser History [COMPLETE]
+- [x] Browser Databases
+  - [x] Chrome History (WebKit timestamps)
+  - [x] Firefox places.sqlite (microsecond timestamps)
+  - [x] Safari History.db
+- [x] History Extraction
+  - [x] URL, title, visit count extraction
+  - [x] Database copy to avoid locking issues
+  - [x] Auto-detection of browser profile paths (macOS + Linux)
+- [x] Integration
+  - [x] BrowserSource implements Source interface
+  - [x] Wired into indexer via config toggle
+
+## Phase 7: Clipboard History [COMPLETE]
+- [x] Clipboard Access
+  - [x] Platform-specific clipboard reading via atotto/clipboard
+  - [x] Content-hash based deduplication
+- [x] Privacy
+  - [x] Password detection heuristics (mixed character classes)
+  - [x] Configurable retention period
+  - [x] Skip passwords option
+- [x] Integration
+  - [x] ClipboardSource implements Source interface
+  - [x] Wired into indexer via config toggle
+
+## Phase 8: File Watcher [COMPLETE]
+- [x] FSNotify Integration
+  - [x] Watch configured directories recursively
+  - [x] Debounce rapid changes (500ms window)
+  - [x] Handle create/write/rename/remove events
+- [x] Incremental Updates
+  - [x] Re-index modified files
+  - [x] Remove deleted files from index
+  - [x] Watch new subdirectories automatically
+- [x] Watcher skips .git, node_modules, .obsidian
+
 ## Phase 9: LLM Integration [PENDING]
 ## Phase 10: Polish [PENDING]
