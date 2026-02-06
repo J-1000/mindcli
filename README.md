@@ -44,13 +44,16 @@ mindcli
 ## Usage
 
 ```bash
-mindcli                          # Start the TUI
-mindcli index                    # Index all configured sources
-mindcli index -paths ~/notes     # Index specific paths
-mindcli index -watch             # Index then watch for changes
-mindcli watch                    # Watch directories for changes
-mindcli config                   # Initialize default config file
-mindcli help                     # Show help
+mindcli                                      # Start the TUI
+mindcli index                                # Index all configured sources
+mindcli index -paths ~/notes                 # Index specific paths
+mindcli index -watch                         # Index then watch for changes
+mindcli watch                                # Watch directories for changes
+mindcli search "Go concurrency"              # Search and print results
+mindcli ask "what did I write about Go?"     # Ask a question (RAG via Ollama)
+mindcli config                               # Initialize default config file
+mindcli version                              # Show version info
+mindcli help                                 # Show help
 ```
 
 ## Keyboard Shortcuts
@@ -107,6 +110,7 @@ sources:
 embeddings:
   provider: ollama       # or "openai"
   model: nomic-embed-text
+  llm_model: llama3.2   # model for answer generation
   ollama_url: http://localhost:11434
 
 search:
@@ -125,11 +129,14 @@ storage:
 
 MindCLI uses a hybrid search approach:
 
-1. **BM25** (via Bleve) for keyword matching
-2. **Vector similarity** (via HNSW) for semantic understanding
-3. **Reciprocal Rank Fusion** merges both result sets into a single ranked list
+1. **Query parsing** — Extracts intent (search/summarize/answer), source filters ("in my emails"), and time references ("last week")
+2. **BM25** (via Bleve) for keyword matching
+3. **Vector similarity** (via HNSW) for semantic understanding
+4. **Reciprocal Rank Fusion** merges both result sets into a single ranked list
 
-When Ollama is not available, search gracefully falls back to BM25-only mode.
+Natural language queries like `"what did I write about Go in my notes last week"` are parsed to filter by source and time automatically.
+
+When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results. When Ollama is not available, search gracefully falls back to BM25-only mode.
 
 ## Development
 

@@ -115,10 +115,14 @@
   - [x] Source filter extraction ("in my emails", "in pdfs")
   - [x] Time reference extraction ("last week", "last month")
   - [x] Query term cleanup
+  - [x] Wired into TUI search flow (source filters passed to Bleve)
+  - [x] Wired into CLI search and ask commands
 - [x] Ollama Text Generation
   - [x] LLMClient for /api/generate endpoint
   - [x] RAG-style answer generation from search context
-  - [x] Configurable model selection
+  - [x] Configurable model selection (llm_model config field)
+  - [x] Answer displayed in TUI preview panel for answer/summarize intents
+  - [x] Standalone `ask` CLI command with source attribution
 
 ## Phase 10: Polish [COMPLETE]
 - [x] Configuration
