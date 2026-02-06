@@ -47,6 +47,11 @@ func run() error {
 			return runIndex(*indexPaths, *indexWatch)
 		case "watch":
 			return runWatch()
+		case "search":
+			if len(os.Args) < 3 {
+				return fmt.Errorf("usage: mindcli search \"query\"")
+			}
+			return runSearch(strings.Join(os.Args[2:], " "))
 		case "ask":
 			if len(os.Args) < 3 {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
@@ -74,6 +79,7 @@ Usage:
   mindcli              Start the TUI
   mindcli index        Index configured sources
   mindcli watch        Watch for file changes and re-index
+  mindcli search "..." Search and print results
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
@@ -88,6 +94,7 @@ Examples:
   mindcli index                                # Index all configured sources
   mindcli index -paths ~/notes                 # Index specific paths
   mindcli index -watch                         # Index then watch for changes
+  mindcli search "Go concurrency"               # Search without TUI
   mindcli ask "what did I write about Go?"     # Ask a question`)
 }
 
@@ -341,6 +348,70 @@ func startWatching(indexer *index.Indexer, cfg *config.Config) error {
 	}()
 
 	return watcher.Start(ctx)
+}
+
+func runSearch(queryStr string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(dataDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		return fmt.Errorf("opening search index: %w", err)
+	}
+	defer searchIndex.Close()
+
+	parsed := query.ParseQuery(queryStr)
+	searchQ := parsed.SearchTerms
+	if parsed.SourceFilter != "" {
+		searchQ = searchQ + " source:" + parsed.SourceFilter
+	}
+
+	ctx := context.Background()
+	results, err := searchIndex.Search(ctx, searchQ, 20)
+	if err != nil {
+		return fmt.Errorf("searching: %w", err)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No results found.")
+		return nil
+	}
+
+	for i, r := range results {
+		doc, err := db.GetDocument(ctx, r.ID)
+		if err != nil || doc == nil {
+			continue
+		}
+		preview := doc.Preview
+		if preview == "" && len(doc.Content) > 100 {
+			preview = doc.Content[:100] + "..."
+		} else if preview == "" {
+			preview = doc.Content
+		}
+		fmt.Printf("%d. %s\n   %s [%s] (score: %.2f)\n   %s\n\n",
+			i+1, doc.Title, doc.Path, doc.Source, r.Score, preview)
+	}
+
+	return nil
 }
 
 func runAsk(question string) error {
