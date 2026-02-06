@@ -56,6 +56,14 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	// Add PDF source if enabled
+	if cfg.Sources.PDF.Enabled {
+		srcs = append(srcs, sources.NewPDFSource(
+			cfg.Sources.PDF.Paths,
+			[]string{".git", "node_modules"},
+		))
+	}
+
 	return &Indexer{
 		db:       db,
 		search:   searchIndex,
