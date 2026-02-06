@@ -4,8 +4,13 @@ BINARY_NAME=mindcli
 BUILD_DIR=bin
 COVERAGE_FILE=coverage.out
 
+# Version info
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+
 # Build flags
-LDFLAGS=-ldflags "-s -w"
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
 ## build: Build the binary
 build:

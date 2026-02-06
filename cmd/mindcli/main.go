@@ -19,6 +19,13 @@ import (
 	"github.com/jankowtf/mindcli/internal/tui"
 )
 
+// Build-time variables set via ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -41,6 +48,9 @@ func run() error {
 			return runWatch()
 		case "config":
 			return runConfigInit()
+		case "version", "-v", "--version":
+			fmt.Printf("mindcli %s (commit: %s, built: %s)\n", version, commit, date)
+			return nil
 		case "help", "-h", "--help":
 			printUsage()
 			return nil
@@ -59,6 +69,7 @@ Usage:
   mindcli index        Index configured sources
   mindcli watch        Watch for file changes and re-index
   mindcli config       Initialize config file
+  mindcli version      Show version info
   mindcli help         Show this help
 
 Index options:
