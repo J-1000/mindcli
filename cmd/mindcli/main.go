@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -46,6 +47,11 @@ func run() error {
 			return runIndex(*indexPaths, *indexWatch)
 		case "watch":
 			return runWatch()
+		case "ask":
+			if len(os.Args) < 3 {
+				return fmt.Errorf("usage: mindcli ask \"your question\"")
+			}
+			return runAsk(strings.Join(os.Args[2:], " "))
 		case "config":
 			return runConfigInit()
 		case "version", "-v", "--version":
@@ -68,6 +74,7 @@ Usage:
   mindcli              Start the TUI
   mindcli index        Index configured sources
   mindcli watch        Watch for file changes and re-index
+  mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
   mindcli help         Show this help
@@ -77,10 +84,11 @@ Index options:
   -watch               Watch for file changes after indexing
 
 Examples:
-  mindcli                          # Start TUI
-  mindcli index                    # Index all configured sources
-  mindcli index -paths ~/notes     # Index specific paths
-  mindcli index -watch             # Index then watch for changes`)
+  mindcli                                      # Start TUI
+  mindcli index                                # Index all configured sources
+  mindcli index -paths ~/notes                 # Index specific paths
+  mindcli index -watch                         # Index then watch for changes
+  mindcli ask "what did I write about Go?"     # Ask a question`)
 }
 
 func loadConfig() (*config.Config, error) {
@@ -333,6 +341,126 @@ func startWatching(indexer *index.Indexer, cfg *config.Config) error {
 	}()
 
 	return watcher.Start(ctx)
+}
+
+func runAsk(question string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(dataDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		return fmt.Errorf("opening search index: %w", err)
+	}
+	defer searchIndex.Close()
+
+	// Parse the query for search terms and source filters.
+	parsed := query.ParseQuery(question)
+	searchQ := parsed.SearchTerms
+	if parsed.SourceFilter != "" {
+		searchQ = searchQ + " source:" + parsed.SourceFilter
+	}
+
+	// Set up hybrid search if available.
+	ctx := context.Background()
+	var docs []*storage.Document
+
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	if _, err := os.Stat(vectorPath); err == nil {
+		vectors, err := storage.NewVectorStore(vectorPath)
+		if err == nil && vectors.Len() > 0 {
+			defer vectors.Close()
+			ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
+			cachePath := filepath.Join(dataDir, "embeddings.db")
+			cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
+			if err == nil {
+				defer cached.Close()
+				hybrid := query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
+				results, err := hybrid.Search(ctx, searchQ, 10)
+				if err == nil {
+					for _, r := range results {
+						docs = append(docs, r.Document)
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback to Bleve search if hybrid didn't produce results.
+	if len(docs) == 0 {
+		results, err := searchIndex.Search(ctx, searchQ, 10)
+		if err != nil {
+			return fmt.Errorf("searching: %w", err)
+		}
+		for _, r := range results {
+			doc, err := db.GetDocument(ctx, r.ID)
+			if err == nil && doc != nil {
+				docs = append(docs, doc)
+			}
+		}
+	}
+
+	if len(docs) == 0 {
+		fmt.Println("No relevant documents found.")
+		return nil
+	}
+
+	// Build context from search results.
+	contexts := make([]string, 0, 5)
+	for i, doc := range docs {
+		if i >= 5 {
+			break
+		}
+		content := doc.Content
+		if len(content) > 1000 {
+			content = content[:1000]
+		}
+		contexts = append(contexts, content)
+	}
+
+	// Generate answer via Ollama.
+	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, "llama3.2")
+	answer, err := llm.GenerateAnswer(ctx, question, contexts)
+	if err != nil {
+		// If LLM fails, show search results instead.
+		fmt.Printf("(Ollama unavailable, showing top results for: %s)\n\n", parsed.SearchTerms)
+		for i, doc := range docs {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("%d. %s\n   %s [%s]\n", i+1, doc.Title, doc.Path, doc.Source)
+		}
+		return nil
+	}
+
+	fmt.Println(answer)
+	fmt.Printf("\nSources:\n")
+	for i, doc := range docs {
+		if i >= 5 {
+			break
+		}
+		fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
+	}
+
+	return nil
 }
 
 func runConfigInit() error {
