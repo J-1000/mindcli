@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestDefault(t *testing.T) {
@@ -238,6 +240,76 @@ func TestMarkdownSourceDefaults(t *testing.T) {
 		if !expectedIgnore[pattern] {
 			t.Errorf("Unexpected ignore pattern in defaults: %s", pattern)
 		}
+	}
+}
+
+func TestEmbeddingsDefaults(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Embeddings.Provider != "ollama" {
+		t.Errorf("Expected default provider 'ollama', got %q", cfg.Embeddings.Provider)
+	}
+
+	if cfg.Embeddings.Model != "nomic-embed-text" {
+		t.Errorf("Expected default model 'nomic-embed-text', got %q", cfg.Embeddings.Model)
+	}
+
+	if cfg.Embeddings.LLMModel != "llama3.2" {
+		t.Errorf("Expected default llm_model 'llama3.2', got %q", cfg.Embeddings.LLMModel)
+	}
+
+	if cfg.Embeddings.OllamaURL != "http://localhost:11434" {
+		t.Errorf("Expected default ollama_url 'http://localhost:11434', got %q", cfg.Embeddings.OllamaURL)
+	}
+}
+
+func TestLLMModelYAMLRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mindcli-config-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write a config with a custom LLM model
+	configContent := []byte(`embeddings:
+  provider: ollama
+  model: nomic-embed-text
+  llm_model: mistral
+  ollama_url: http://localhost:11434
+`)
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, configContent, 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	// Parse it
+	cfg := Default()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config: %v", err)
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		t.Fatalf("Failed to parse config: %v", err)
+	}
+
+	if cfg.Embeddings.LLMModel != "mistral" {
+		t.Errorf("LLMModel = %q, want 'mistral'", cfg.Embeddings.LLMModel)
+	}
+
+	// Marshal back and verify it round-trips
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	cfg2 := Default()
+	if err := yaml.Unmarshal(out, cfg2); err != nil {
+		t.Fatalf("Failed to re-parse config: %v", err)
+	}
+
+	if cfg2.Embeddings.LLMModel != "mistral" {
+		t.Errorf("After round-trip, LLMModel = %q, want 'mistral'", cfg2.Embeddings.LLMModel)
 	}
 }
 

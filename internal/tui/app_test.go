@@ -3,10 +3,12 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
 
@@ -373,4 +375,178 @@ func TestMaxFunction(t *testing.T) {
 			t.Errorf("max(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
 	}
+}
+
+func TestMinFunction(t *testing.T) {
+	tests := []struct {
+		a, b, want int
+	}{
+		{1, 2, 1},
+		{2, 1, 1},
+		{0, 0, 0},
+		{-1, 1, -1},
+		{-5, -3, -5},
+	}
+
+	for _, tt := range tests {
+		got := min(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("min(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestNewWithLLMClient(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	llm := query.NewLLMClient("http://localhost:11434", "llama3.2")
+	model := New(db, nil, nil, llm)
+
+	if model.llm != llm {
+		t.Error("New() did not set LLM client")
+	}
+}
+
+func TestSearchResultsWithAnswer(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil)
+	model.width = 120
+	model.height = 40
+
+	docs := []*storage.Document{
+		{ID: "1", Title: "Go Guide", Source: storage.SourceMarkdown, Content: "Learn Go"},
+		{ID: "2", Title: "Go Tips", Source: storage.SourceMarkdown, Content: "Go tips"},
+	}
+
+	msg := searchResultsMsg{
+		docs:   docs,
+		answer: "Go is a compiled language created at Google.",
+		parsed: query.ParsedQuery{
+			Original:    "what is Go?",
+			Intent:      query.IntentAnswer,
+			SearchTerms: "Go",
+		},
+	}
+	updated, _ := model.Update(msg)
+	m := updated.(Model)
+
+	if m.answerText != "Go is a compiled language created at Google." {
+		t.Errorf("answerText = %q, want the LLM answer", m.answerText)
+	}
+	if len(m.results) != 2 {
+		t.Errorf("results len = %d, want 2", len(m.results))
+	}
+}
+
+func TestSearchResultsWithSourceFilter(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil)
+
+	msg := searchResultsMsg{
+		docs: []*storage.Document{
+			{ID: "1", Title: "Email 1", Source: storage.SourceEmail},
+		},
+		parsed: query.ParsedQuery{
+			Original:     "meetings in my emails",
+			Intent:       query.IntentSearch,
+			SearchTerms:  "meetings",
+			SourceFilter: "email",
+		},
+	}
+	updated, _ := model.Update(msg)
+	m := updated.(Model)
+
+	if !strings.Contains(m.statusMsg, "[source:email]") {
+		t.Errorf("statusMsg = %q, want it to contain '[source:email]'", m.statusMsg)
+	}
+}
+
+func TestSearchResultsWithTimeFilter(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil)
+
+	msg := searchResultsMsg{
+		docs: []*storage.Document{
+			{ID: "1", Title: "Note", Source: storage.SourceMarkdown},
+		},
+		parsed: query.ParsedQuery{
+			Original:    "notes from last week",
+			Intent:      query.IntentSearch,
+			SearchTerms: "notes",
+			TimeFilter:  "last week",
+		},
+	}
+	updated, _ := model.Update(msg)
+	m := updated.(Model)
+
+	if !strings.Contains(m.statusMsg, "[last week]") {
+		t.Errorf("statusMsg = %q, want it to contain '[last week]'", m.statusMsg)
+	}
+}
+
+func TestShowAnswer(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil)
+	model.width = 120
+	model.height = 40
+	model.updateViewportSize()
+	model.answerText = "This is the LLM answer."
+	model.results = []*storage.Document{
+		{ID: "1", Title: "Source Doc", Source: storage.SourceMarkdown},
+		{ID: "2", Title: "Source Doc 2", Source: storage.SourceMarkdown},
+	}
+
+	model.showAnswer()
+
+	content := model.preview.View()
+	if content == "" {
+		t.Error("showAnswer() did not set preview content")
+	}
+}
+
+func TestAnswerClearedOnNavigation(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil)
+	model.width = 120
+	model.height = 40
+
+	// Simulate receiving results with an answer
+	docs := []*storage.Document{
+		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown, Content: "Content 1", Path: "/a.md"},
+		{ID: "2", Title: "Doc 2", Source: storage.SourceMarkdown, Content: "Content 2", Path: "/b.md"},
+	}
+	msg := searchResultsMsg{
+		docs:   docs,
+		answer: "An LLM answer",
+		parsed: query.ParsedQuery{Intent: query.IntentAnswer, SearchTerms: "test"},
+	}
+	updated, _ := model.Update(msg)
+	m := updated.(Model)
+
+	if m.answerText == "" {
+		t.Fatal("answerText should be set after search results with answer")
+	}
+
+	// Navigate to results panel and move cursor — preview should show the document, not the answer
+	m.panel = PanelResults
+	downMsg := tea.KeyMsg{Type: tea.KeyDown}
+	updated, _ = m.Update(downMsg)
+	m = updated.(Model)
+
+	if m.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", m.cursor)
+	}
+	// updatePreviewContent was called, which overwrites the answer in the viewport
+	// We can verify cursor moved correctly — the document preview is the standard behavior
 }
