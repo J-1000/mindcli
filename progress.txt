@@ -48,7 +48,17 @@
   - [x] Hybrid search wired to TUI
   - [x] Vector store save on index completion
 
-## Phase 4: PDF Support [PENDING]
+## Phase 4: PDF Support [COMPLETE]
+- [x] PDF Parser
+  - [x] Text extraction using ledongthuc/pdf
+  - [x] Page-by-page text extraction
+  - [x] Title from filename
+  - [x] Preview generation
+- [x] Integration
+  - [x] PDFSource implements Source interface
+  - [x] Reuses existing Scanner for file discovery
+  - [x] Wired into indexer via config toggle
+
 ## Phase 5: Email Integration [PENDING]
 ## Phase 6: Browser History [PENDING]
 ## Phase 7: Clipboard History [PENDING]
