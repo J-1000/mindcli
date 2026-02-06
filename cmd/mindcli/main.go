@@ -158,7 +158,7 @@ func runTUI() error {
 	// Set up LLM client (optional - for answer generation)
 	var llm *query.LLMClient
 	if cfg.Embeddings.Provider == "ollama" {
-		llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, "llama3.2")
+		llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
 	}
 
 	// Create and run the TUI
@@ -437,7 +437,7 @@ func runAsk(question string) error {
 	}
 
 	// Generate answer via Ollama.
-	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, "llama3.2")
+	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
 	answer, err := llm.GenerateAnswer(ctx, question, contexts)
 	if err != nil {
 		// If LLM fails, show search results instead.

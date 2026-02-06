@@ -62,10 +62,11 @@ type ClipboardSourceConfig struct {
 	SkipPasswords bool `yaml:"skip_passwords"`
 }
 
-// EmbeddingsConfig configures the embedding provider.
+// EmbeddingsConfig configures the embedding provider and LLM.
 type EmbeddingsConfig struct {
 	Provider  string `yaml:"provider"`
 	Model     string `yaml:"model"`
+	LLMModel  string `yaml:"llm_model"`
 	OllamaURL string `yaml:"ollama_url"`
 	OpenAIKey string `yaml:"openai_key"`
 }
@@ -122,6 +123,7 @@ func Default() *Config {
 		Embeddings: EmbeddingsConfig{
 			Provider:  "ollama",
 			Model:     "nomic-embed-text",
+			LLMModel:  "llama3.2",
 			OllamaURL: "http://localhost:11434",
 		},
 		Search: SearchConfig{
