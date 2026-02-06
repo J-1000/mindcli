@@ -34,6 +34,7 @@ type Model struct {
 	db     *storage.DB
 	search *search.BleveIndex
 	hybrid *query.HybridSearcher
+	llm    *query.LLMClient
 
 	// UI Components
 	searchInput textinput.Model
@@ -46,6 +47,7 @@ type Model struct {
 	showHelp    bool
 	statusMsg   string
 	statusIsErr bool
+	answerText  string // LLM-generated answer for the current query
 
 	// Dimensions
 	width  int
@@ -56,8 +58,8 @@ type Model struct {
 }
 
 // New creates a new Model with the given database and search index.
-// The hybrid searcher is optional; if nil, BM25-only search is used.
-func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher) Model {
+// The hybrid searcher and LLM client are optional; if nil, those features are skipped.
+func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -73,6 +75,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		db:          db,
 		search:      searchIndex,
 		hybrid:      hybrid,
+		llm:         llm,
 		searchInput: ti,
 		preview:     vp,
 		panel:       PanelSearch,
@@ -101,31 +104,38 @@ func (m Model) loadDocuments() tea.Cmd {
 }
 
 // searchDocuments searches using hybrid search (BM25 + vector) when available.
+// It uses the query parser to extract intent, source filters, and time filters.
 func (m Model) searchDocuments(q string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
+		parsed := query.ParseQuery(q)
+
+		// Build search query with source filter if detected.
+		searchQ := parsed.SearchTerms
+		if parsed.SourceFilter != "" {
+			searchQ = searchQ + " source:" + parsed.SourceFilter
+		}
+
+		var docs []*storage.Document
 
 		// Use hybrid search if available
 		if m.hybrid != nil {
-			results, err := m.hybrid.Search(ctx, q, 50)
+			results, err := m.hybrid.Search(ctx, searchQ, 50)
 			if err != nil {
 				return errMsg{err}
 			}
-			docs := make([]*storage.Document, 0, len(results))
+			docs = make([]*storage.Document, 0, len(results))
 			for _, r := range results {
 				docs = append(docs, r.Document)
 			}
-			return searchResultsMsg{docs}
-		}
-
-		// Use Bleve if available, fall back to SQLite LIKE search
-		if m.search != nil {
-			results, err := m.search.Search(ctx, q, 50)
+		} else if m.search != nil {
+			// Use Bleve, fall back to SQLite LIKE search
+			results, err := m.search.Search(ctx, searchQ, 50)
 			if err != nil {
 				return errMsg{err}
 			}
 
-			docs := make([]*storage.Document, 0, len(results))
+			docs = make([]*storage.Document, 0, len(results))
 			for _, r := range results {
 				doc, err := m.db.GetDocument(ctx, r.ID)
 				if err != nil {
@@ -133,15 +143,37 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 				}
 				docs = append(docs, doc)
 			}
-			return searchResultsMsg{docs}
+		} else {
+			// Fallback to simple SQLite search
+			var err error
+			docs, err = m.db.SearchDocuments(ctx, parsed.SearchTerms, 50)
+			if err != nil {
+				return errMsg{err}
+			}
 		}
 
-		// Fallback to simple SQLite search
-		docs, err := m.db.SearchDocuments(ctx, q, 50)
-		if err != nil {
-			return errMsg{err}
+		// For answer/summarize intents, generate an LLM answer if available.
+		var answer string
+		if m.llm != nil && len(docs) > 0 &&
+			(parsed.Intent == query.IntentAnswer || parsed.Intent == query.IntentSummarize) {
+			contexts := make([]string, 0, 5)
+			for i, doc := range docs {
+				if i >= 5 {
+					break
+				}
+				content := doc.Content
+				if len(content) > 1000 {
+					content = content[:1000]
+				}
+				contexts = append(contexts, content)
+			}
+			ans, err := m.llm.GenerateAnswer(ctx, q, contexts)
+			if err == nil {
+				answer = ans
+			}
 		}
-		return searchResultsMsg{docs}
+
+		return searchResultsMsg{docs: docs, answer: answer, parsed: parsed}
 	}
 }
 
@@ -151,7 +183,9 @@ type docsLoadedMsg struct {
 }
 
 type searchResultsMsg struct {
-	docs []*storage.Document
+	docs   []*storage.Document
+	answer string
+	parsed query.ParsedQuery
 }
 
 type errMsg struct {
@@ -223,9 +257,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchResultsMsg:
 		m.results = msg.docs
 		m.cursor = 0
-		m.statusMsg = fmt.Sprintf("%d results", len(m.results))
+		m.answerText = msg.answer
+		status := fmt.Sprintf("%d results", len(m.results))
+		if msg.parsed.SourceFilter != "" {
+			status += fmt.Sprintf(" [source:%s]", msg.parsed.SourceFilter)
+		}
+		if msg.parsed.TimeFilter != "" {
+			status += fmt.Sprintf(" [%s]", msg.parsed.TimeFilter)
+		}
+		m.statusMsg = status
 		m.statusIsErr = false
-		m.updatePreviewContent()
+		if m.answerText != "" {
+			m.showAnswer()
+		} else {
+			m.updatePreviewContent()
+		}
 		return m, nil
 
 	case errMsg:
@@ -387,6 +433,16 @@ func (m *Model) updateViewportSize() {
 	}
 	m.preview.Width = previewWidth
 	m.preview.Height = previewHeight
+}
+
+func (m *Model) showAnswer() {
+	var sb strings.Builder
+	sb.WriteString(styles.PreviewTitleStyle.Render("Answer"))
+	sb.WriteString("\n\n")
+	sb.WriteString(styles.PreviewContentStyle.Render(m.answerText))
+	sb.WriteString("\n\n")
+	sb.WriteString(styles.ResultSourceStyle.Render(fmt.Sprintf("Based on %d sources", min(5, len(m.results)))))
+	m.preview.SetContent(sb.String())
 }
 
 func (m *Model) updatePreviewContent() {
@@ -585,6 +641,13 @@ func (m Model) renderHelp() string {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

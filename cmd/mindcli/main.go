@@ -147,8 +147,14 @@ func runTUI() error {
 		}
 	}
 
+	// Set up LLM client (optional - for answer generation)
+	var llm *query.LLMClient
+	if cfg.Embeddings.Provider == "ollama" {
+		llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, "llama3.2")
+	}
+
 	// Create and run the TUI
-	model := tui.New(db, searchIndex, hybrid)
+	model := tui.New(db, searchIndex, hybrid, llm)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

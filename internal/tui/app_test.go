@@ -37,7 +37,7 @@ func TestNew(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	if model.db != db {
 		t.Error("New() did not set database")
@@ -56,7 +56,7 @@ func TestModelInit(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	cmd := model.Init()
 
 	if cmd == nil {
@@ -68,7 +68,7 @@ func TestModelUpdateWindowSize(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	msg := tea.WindowSizeMsg{Width: 120, Height: 40}
 	updated, _ := model.Update(msg)
@@ -86,7 +86,7 @@ func TestModelUpdateDocsLoaded(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	docs := []*storage.Document{
 		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown},
@@ -106,7 +106,7 @@ func TestModelUpdateSearchResults(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	docs := []*storage.Document{
 		{ID: "1", Title: "Search Result", Source: storage.SourceMarkdown},
@@ -128,7 +128,7 @@ func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	msg := errMsg{err: os.ErrNotExist}
 	updated, _ := model.Update(msg)
@@ -143,7 +143,7 @@ func TestModelToggleHelp(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	if model.showHelp {
 		t.Error("showHelp should initially be false")
@@ -171,7 +171,7 @@ func TestModelView(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	model.width = 120
 	model.height = 40
 
@@ -190,7 +190,7 @@ func TestModelViewLoading(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	// Don't set width/height
 
 	view := model.View()
@@ -204,7 +204,7 @@ func TestModelViewHelp(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	model.width = 120
 	model.height = 40
 	model.showHelp = true
@@ -220,7 +220,7 @@ func TestPanelNavigation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	// Add some results so we can navigate
 	model.results = []*storage.Document{
 		{ID: "1", Title: "Test", Source: storage.SourceMarkdown},
@@ -261,7 +261,7 @@ func TestPanelNavigationShiftTab(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	model.panel = PanelResults
 
 	shiftTabMsg := tea.KeyMsg{Type: tea.KeyShiftTab}
@@ -277,7 +277,7 @@ func TestResultsNavigation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 	model.panel = PanelResults
 	model.results = []*storage.Document{
 		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown},
@@ -337,7 +337,7 @@ func TestSearchResultsIntegration(t *testing.T) {
 		}
 	}
 
-	model := New(db, nil, nil)
+	model := New(db, nil, nil, nil)
 
 	// Initialize and run the load command
 	cmd := model.Init()
