@@ -45,6 +45,7 @@ func TestPrintUsage(t *testing.T) {
 		"mindcli index",
 		"mindcli watch",
 		"mindcli search",
+		"mindcli export",
 		"mindcli ask",
 		"mindcli config",
 		"mindcli version",

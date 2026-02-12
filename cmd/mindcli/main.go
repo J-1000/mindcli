@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,6 +53,8 @@ func run() error {
 				return fmt.Errorf("usage: mindcli search \"query\"")
 			}
 			return runSearch(strings.Join(os.Args[2:], " "))
+		case "export":
+			return runExport(os.Args[2:])
 		case "ask":
 			if len(os.Args) < 3 {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
@@ -80,6 +83,7 @@ Usage:
   mindcli index        Index configured sources
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
+  mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
@@ -95,6 +99,8 @@ Examples:
   mindcli index -paths ~/notes                 # Index specific paths
   mindcli index -watch                         # Index then watch for changes
   mindcli search "Go concurrency"               # Search without TUI
+  mindcli export "Go" --format csv             # Export results as CSV
+  mindcli export "Go" --output results.json    # Export to file
   mindcli ask "what did I write about Go?"     # Ask a question`)
 }
 
@@ -411,6 +417,125 @@ func runSearch(queryStr string) error {
 			i+1, doc.Title, doc.Path, doc.Source, r.Score, preview)
 	}
 
+	return nil
+}
+
+func runExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	format := fs.String("format", "json", "Output format: json, csv, markdown")
+	output := fs.String("output", "", "Output file (default: stdout)")
+	limit := fs.Int("limit", 50, "Maximum number of results")
+	fs.Parse(args)
+
+	queryStr := strings.Join(fs.Args(), " ")
+	if queryStr == "" {
+		return fmt.Errorf("usage: mindcli export \"query\" [--format json|csv|markdown] [--output file] [--limit N]")
+	}
+
+	switch *format {
+	case "json", "csv", "markdown":
+	default:
+		return fmt.Errorf("unsupported format %q: use json, csv, or markdown", *format)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(dataDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		return fmt.Errorf("opening search index: %w", err)
+	}
+	defer searchIndex.Close()
+
+	parsed := query.ParseQuery(queryStr)
+	searchQ := parsed.SearchTerms
+	if parsed.SourceFilter != "" {
+		searchQ = searchQ + " source:" + parsed.SourceFilter
+	}
+
+	ctx := context.Background()
+	var results storage.SearchResults
+
+	// Try hybrid search first.
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	if _, statErr := os.Stat(vectorPath); statErr == nil {
+		vectors, vErr := storage.NewVectorStore(vectorPath)
+		if vErr == nil && vectors.Len() > 0 {
+			defer vectors.Close()
+			ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
+			cachePath := filepath.Join(dataDir, "embeddings.db")
+			cached, cErr := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
+			if cErr == nil {
+				defer cached.Close()
+				hybrid := query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
+				hybridResults, hErr := hybrid.Search(ctx, searchQ, *limit)
+				if hErr == nil {
+					results = hybridResults
+				}
+			}
+		}
+	}
+
+	// Fallback to Bleve search.
+	if len(results) == 0 {
+		bleveResults, err := searchIndex.Search(ctx, searchQ, *limit)
+		if err != nil {
+			return fmt.Errorf("searching: %w", err)
+		}
+		for _, r := range bleveResults {
+			doc, err := db.GetDocument(ctx, r.ID)
+			if err == nil && doc != nil {
+				results = append(results, &storage.SearchResult{
+					Document:  doc,
+					Score:     r.Score,
+					BM25Score: r.Score,
+				})
+			}
+		}
+	}
+
+	if len(results) == 0 {
+		return fmt.Errorf("no results found for %q", queryStr)
+	}
+
+	// Determine output writer.
+	var w io.Writer = os.Stdout
+	if *output != "" {
+		f, err := os.Create(*output)
+		if err != nil {
+			return fmt.Errorf("creating output file: %w", err)
+		}
+		defer f.Close()
+		w = f
+	}
+
+	switch *format {
+	case "json":
+		return exportJSON(w, results)
+	case "csv":
+		return exportCSV(w, results)
+	case "markdown":
+		return exportMarkdown(w, results)
+	}
 	return nil
 }
 
