@@ -12,6 +12,7 @@ Search across your notes, PDFs, emails, browser history, and clipboard — all f
 - **Beautiful TUI** — Three-panel Bubble Tea interface with live preview and real-time streaming
 - **Export** — Search results to JSON, CSV, or Markdown
 - **Tagging** — Manual tags on any document, displayed in TUI and searchable
+- **Collections** — Named groups of documents (like playlists), with CLI and TUI management
 - **Fast** — Concurrent worker pool indexing, incremental updates, content-hash caching
 - **File watcher** — Real-time re-indexing via fsnotify with debouncing
 - **Private** — All data stays on your machine, password detection for clipboard
@@ -55,6 +56,10 @@ mindcli search "Go concurrency"              # Search and print results
 mindcli export "Go" --format json            # Export results as JSON/CSV/Markdown
 mindcli tag add ~/notes/foo.md mytag         # Add a tag to a document
 mindcli tag list                             # List all tags
+mindcli collection create "reading-list"     # Create a collection
+mindcli collection add reading-list ~/f.md   # Add a document to a collection
+mindcli collection list                      # List all collections
+mindcli collection show reading-list         # Show collection details and documents
 mindcli ask "what did I write about Go?"     # Ask a question (streaming RAG via Ollama)
 mindcli config                               # Initialize default config file
 mindcli version                              # Show version info
@@ -73,6 +78,8 @@ mindcli help                                 # Show help
 | `y` | Copy file path to clipboard |
 | `r` | Refresh document list |
 | `t` | Add tag to selected document |
+| `c` | Add to collection |
+| `C` | Browse collections |
 | `g` / `G` | Go to start / end of results |
 | `Ctrl+u` / `Ctrl+d` | Half page up / down (preview) |
 | `PgUp` / `PgDn` | Page up / down |

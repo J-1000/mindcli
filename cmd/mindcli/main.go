@@ -107,7 +107,9 @@ Examples:
   mindcli search "Go concurrency"               # Search without TUI
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
-  mindcli ask "what did I write about Go?"     # Ask a question`)
+  mindcli ask "what did I write about Go?"     # Ask a question
+  mindcli collection create "reading-list"   # Create a collection
+  mindcli collection list                    # List all collections`)
 }
 
 func loadConfig() (*config.Config, error) {
