@@ -422,8 +422,7 @@ func TestSearchResultsWithAnswer(t *testing.T) {
 	}
 
 	msg := searchResultsMsg{
-		docs:   docs,
-		answer: "Go is a compiled language created at Google.",
+		docs: docs,
 		parsed: query.ParsedQuery{
 			Original:    "what is Go?",
 			Intent:      query.IntentAnswer,
@@ -433,8 +432,9 @@ func TestSearchResultsWithAnswer(t *testing.T) {
 	updated, _ := model.Update(msg)
 	m := updated.(Model)
 
-	if m.answerText != "Go is a compiled language created at Google." {
-		t.Errorf("answerText = %q, want the LLM answer", m.answerText)
+	// Without LLM client, no streaming should start; answerText stays empty
+	if m.answerText != "" {
+		t.Errorf("answerText = %q, want empty (no LLM client)", m.answerText)
 	}
 	if len(m.results) != 2 {
 		t.Errorf("results len = %d, want 2", len(m.results))
@@ -521,24 +521,27 @@ func TestAnswerClearedOnNavigation(t *testing.T) {
 	model.width = 120
 	model.height = 40
 
-	// Simulate receiving results with an answer
+	// Simulate receiving search results (no LLM set so no streaming)
 	docs := []*storage.Document{
 		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown, Content: "Content 1", Path: "/a.md"},
 		{ID: "2", Title: "Doc 2", Source: storage.SourceMarkdown, Content: "Content 2", Path: "/b.md"},
 	}
 	msg := searchResultsMsg{
 		docs:   docs,
-		answer: "An LLM answer",
 		parsed: query.ParsedQuery{Intent: query.IntentAnswer, SearchTerms: "test"},
 	}
 	updated, _ := model.Update(msg)
 	m := updated.(Model)
 
-	if m.answerText == "" {
-		t.Fatal("answerText should be set after search results with answer")
+	// Without LLM, no streaming should start — answerText stays empty
+	if m.answerText != "" {
+		t.Fatal("answerText should be empty without LLM client")
+	}
+	if m.streaming {
+		t.Fatal("should not be streaming without LLM client")
 	}
 
-	// Navigate to results panel and move cursor — preview should show the document, not the answer
+	// Navigate to results panel and move cursor
 	m.panel = PanelResults
 	downMsg := tea.KeyMsg{Type: tea.KeyDown}
 	updated, _ = m.Update(downMsg)
@@ -547,6 +550,23 @@ func TestAnswerClearedOnNavigation(t *testing.T) {
 	if m.cursor != 1 {
 		t.Fatalf("cursor = %d, want 1", m.cursor)
 	}
-	// updatePreviewContent was called, which overwrites the answer in the viewport
-	// We can verify cursor moved correctly — the document preview is the standard behavior
+
+	// Test streamChunkMsg handling
+	m.streaming = true
+	m.answerText = ""
+	chunkUpdated, _ := m.Update(streamChunkMsg{token: "Hello", done: false})
+	mc := chunkUpdated.(Model)
+	if mc.answerText != "Hello" {
+		t.Errorf("answerText = %q, want %q", mc.answerText, "Hello")
+	}
+	if !mc.streaming {
+		t.Error("should still be streaming after non-done chunk")
+	}
+
+	// Final chunk
+	doneUpdated, _ := mc.Update(streamChunkMsg{done: true})
+	md := doneUpdated.(Model)
+	if md.streaming {
+		t.Error("should not be streaming after done chunk")
+	}
 }

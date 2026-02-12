@@ -47,9 +47,12 @@ type Model struct {
 	showHelp    bool
 	statusMsg   string
 	statusIsErr bool
-	answerText  string // LLM-generated answer for the current query
-	tagging     bool   // true when tag input mode is active
-	tagInput    textinput.Model
+	answerText   string // LLM-generated answer for the current query
+	tagging      bool   // true when tag input mode is active
+	tagInput     textinput.Model
+	streaming    bool               // true while streaming LLM answer
+	streamCh     chan streamChunkMsg // channel for streaming tokens
+	streamCancel context.CancelFunc // cancel in-flight stream
 
 	// Dimensions
 	width  int
@@ -159,28 +162,7 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 			}
 		}
 
-		// For answer/summarize intents, generate an LLM answer if available.
-		var answer string
-		if m.llm != nil && len(docs) > 0 &&
-			(parsed.Intent == query.IntentAnswer || parsed.Intent == query.IntentSummarize) {
-			contexts := make([]string, 0, 5)
-			for i, doc := range docs {
-				if i >= 5 {
-					break
-				}
-				content := doc.Content
-				if len(content) > 1000 {
-					content = content[:1000]
-				}
-				contexts = append(contexts, content)
-			}
-			ans, err := m.llm.GenerateAnswer(ctx, q, contexts)
-			if err == nil {
-				answer = ans
-			}
-		}
-
-		return searchResultsMsg{docs: docs, answer: answer, parsed: parsed}
+		return searchResultsMsg{docs: docs, parsed: parsed}
 	}
 }
 
@@ -191,12 +173,16 @@ type docsLoadedMsg struct {
 
 type searchResultsMsg struct {
 	docs   []*storage.Document
-	answer string
 	parsed query.ParsedQuery
 }
 
 type errMsg struct {
 	err error
+}
+
+type streamChunkMsg struct {
+	token string
+	done  bool
 }
 
 // Update handles messages and updates the model.
@@ -213,6 +199,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle global keys first
 		switch {
 		case key.Matches(msg, m.keys.Quit):
+			m.cancelStream()
 			if m.panel != PanelSearch || m.searchInput.Value() == "" {
 				return m, tea.Quit
 			}
@@ -269,7 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchResultsMsg:
 		m.results = msg.docs
 		m.cursor = 0
-		m.answerText = msg.answer
+		m.answerText = ""
 		status := fmt.Sprintf("%d results", len(m.results))
 		if msg.parsed.SourceFilter != "" {
 			status += fmt.Sprintf(" [source:%s]", msg.parsed.SourceFilter)
@@ -279,12 +266,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = status
 		m.statusIsErr = false
-		if m.answerText != "" {
+		// Start streaming if intent is answer/summarize
+		if m.llm != nil && len(m.results) > 0 &&
+			(msg.parsed.Intent == query.IntentAnswer || msg.parsed.Intent == query.IntentSummarize) {
+			m.showAnswer() // Shows "Thinking..."
+			return m, m.startStreaming(msg.parsed.Original, m.results)
+		}
+		m.updatePreviewContent()
+		return m, nil
+
+	case streamChunkMsg:
+		if msg.done {
+			m.streaming = false
 			m.showAnswer()
 		} else {
-			m.updatePreviewContent()
+			m.answerText += msg.token
+			m.showAnswer()
+			cmds = append(cmds, m.readNextChunk())
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case errMsg:
 		m.statusMsg = msg.err.Error()
@@ -298,6 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Enter):
+		m.cancelStream()
 		query := m.searchInput.Value()
 		if query == "" {
 			return m, m.loadDocuments()
@@ -503,10 +504,75 @@ func (m *Model) showAnswer() {
 	var sb strings.Builder
 	sb.WriteString(styles.PreviewTitleStyle.Render("Answer"))
 	sb.WriteString("\n\n")
-	sb.WriteString(styles.PreviewContentStyle.Render(m.answerText))
+	if m.answerText == "" && m.streaming {
+		sb.WriteString(styles.PreviewContentStyle.Render("Thinking..."))
+	} else {
+		sb.WriteString(styles.PreviewContentStyle.Render(m.answerText))
+	}
+	if m.streaming {
+		sb.WriteString(styles.ResultSourceStyle.Render(" \u2588")) // block cursor
+	}
 	sb.WriteString("\n\n")
 	sb.WriteString(styles.ResultSourceStyle.Render(fmt.Sprintf("Based on %d sources", min(5, len(m.results)))))
 	m.preview.SetContent(sb.String())
+}
+
+func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cmd {
+	// Cancel any existing stream.
+	if m.streamCancel != nil {
+		m.streamCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamCancel = cancel
+	m.streaming = true
+	m.answerText = ""
+
+	ch := make(chan streamChunkMsg, 64)
+	m.streamCh = ch
+
+	// Build contexts from top 5 docs.
+	contexts := make([]string, 0, 5)
+	for i, doc := range docs {
+		if i >= 5 {
+			break
+		}
+		content := doc.Content
+		if len(content) > 1000 {
+			content = content[:1000]
+		}
+		contexts = append(contexts, content)
+	}
+
+	go func() {
+		defer close(ch)
+		m.llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+			select {
+			case ch <- streamChunkMsg{token: token, done: done}:
+			case <-ctx.Done():
+			}
+		})
+	}()
+
+	return m.readNextChunk()
+}
+
+func (m *Model) cancelStream() {
+	if m.streaming && m.streamCancel != nil {
+		m.streamCancel()
+		m.streaming = false
+	}
+}
+
+func (m *Model) readNextChunk() tea.Cmd {
+	ch := m.streamCh
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return streamChunkMsg{done: true}
+		}
+		return chunk
+	}
 }
 
 func (m *Model) updatePreviewContent() {
