@@ -158,28 +158,86 @@ func ParseQuery(query string) ParsedQuery {
 	return parsed
 }
 
-// GenerateAnswer creates a RAG-style answer from search results using an LLM.
-func (c *LLMClient) GenerateAnswer(ctx context.Context, query string, contexts []string) (string, error) {
-	if len(contexts) == 0 {
-		return "No relevant documents found.", nil
-	}
-
-	// Build context string from search results.
+// buildRAGPrompt constructs the prompt for RAG-style answer generation.
+func buildRAGPrompt(question string, contexts []string) string {
 	var contextStr strings.Builder
 	for i, ctx := range contexts {
 		if i >= 5 {
-			break // Limit context to top 5 results
+			break
 		}
 		contextStr.WriteString(fmt.Sprintf("--- Document %d ---\n%s\n\n", i+1, ctx))
 	}
 
-	prompt := fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely.
+	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely.
 
 %s
 
 Question: %s
 
-Answer:`, contextStr.String(), query)
+Answer:`, contextStr.String(), question)
+}
 
-	return c.Generate(ctx, prompt)
+// GenerateAnswer creates a RAG-style answer from search results using an LLM.
+func (c *LLMClient) GenerateAnswer(ctx context.Context, query string, contexts []string) (string, error) {
+	if len(contexts) == 0 {
+		return "No relevant documents found.", nil
+	}
+	return c.Generate(ctx, buildRAGPrompt(query, contexts))
+}
+
+// GenerateStream sends a streaming request and calls onChunk for each token.
+func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk func(token string, done bool)) error {
+	reqBody := ollamaGenerateRequest{
+		Model:  c.model,
+		Prompt: prompt,
+		Stream: true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use a client without timeout for streaming; rely on ctx for cancellation.
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var chunk ollamaGenerateResponse
+		if err := decoder.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("decoding stream: %w", err)
+		}
+		onChunk(chunk.Response, chunk.Done)
+		if chunk.Done {
+			return nil
+		}
+	}
+}
+
+// GenerateAnswerStream builds the RAG prompt and streams the response.
+func (c *LLMClient) GenerateAnswerStream(ctx context.Context, question string, contexts []string, onChunk func(string, bool)) error {
+	if len(contexts) == 0 {
+		onChunk("No relevant documents found.", true)
+		return nil
+	}
+	return c.GenerateStream(ctx, buildRAGPrompt(question, contexts), onChunk)
 }
