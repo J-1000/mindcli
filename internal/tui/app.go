@@ -52,6 +52,11 @@ type Model struct {
 	tagInput     textinput.Model
 	collecting   bool   // true when collection input mode is active
 	collectInput textinput.Model
+
+	browsingCollections bool                  // true when browsing collections list
+	collections         []*storage.Collection // loaded collections
+	collectionCursor    int                   // cursor in collections list
+	prevResults         []*storage.Document   // saved results before browsing
 	streaming    bool               // true while streaming LLM answer
 	streamCh     chan streamChunkMsg // channel for streaming tokens
 	streamCancel context.CancelFunc // cancel in-flight stream
@@ -187,6 +192,14 @@ type errMsg struct {
 	err error
 }
 
+type collectionsLoadedMsg struct {
+	collections []*storage.Collection
+}
+
+type collectionDocsLoadedMsg struct {
+	docs []*storage.Document
+}
+
 type streamChunkMsg struct {
 	token string
 	done  bool
@@ -296,6 +309,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case collectionsLoadedMsg:
+		m.collections = msg.collections
+		m.collectionCursor = 0
+		if len(msg.collections) == 0 {
+			m.statusMsg = "No collections found"
+		} else {
+			m.statusMsg = fmt.Sprintf("%d collections", len(msg.collections))
+		}
+		m.statusIsErr = false
+		return m, nil
+
+	case collectionDocsLoadedMsg:
+		m.browsingCollections = false
+		m.results = msg.docs
+		m.cursor = 0
+		m.statusMsg = fmt.Sprintf("%d documents in collection", len(msg.docs))
+		m.statusIsErr = false
+		m.updatePreviewContent()
+		return m, nil
+
 	case errMsg:
 		m.statusMsg = msg.err.Error()
 		m.statusIsErr = true
@@ -329,6 +362,11 @@ func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
+	// Handle collection browsing mode.
+	if m.browsingCollections {
+		return m.updateBrowseCollections(msg)
+	}
+
 	switch {
 	case key.Matches(msg, m.keys.Up):
 		if m.cursor > 0 {
@@ -403,6 +441,21 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, m.keys.BrowseCollections):
+		m.browsingCollections = true
+		m.collectionCursor = 0
+		m.prevResults = m.results
+		m.statusMsg = "Loading collections..."
+		m.statusIsErr = false
+		return m, func() tea.Msg {
+			ctx := context.Background()
+			cols, err := m.db.ListCollections(ctx)
+			if err != nil {
+				return errMsg{err}
+			}
+			return collectionsLoadedMsg{cols}
+		}
+
 	case key.Matches(msg, m.keys.Collection):
 		if m.cursor < len(m.results) {
 			m.collecting = true
@@ -462,6 +515,46 @@ func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.tagInput, cmd = m.tagInput.Update(msg)
 	return m, cmd
+}
+
+func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		if m.collectionCursor > 0 {
+			m.collectionCursor--
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		if m.collectionCursor < len(m.collections)-1 {
+			m.collectionCursor++
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Enter):
+		if m.collectionCursor < len(m.collections) {
+			col := m.collections[m.collectionCursor]
+			return m, func() tea.Msg {
+				ctx := context.Background()
+				docs, err := m.db.GetCollectionDocuments(ctx, col.ID)
+				if err != nil {
+					return errMsg{err}
+				}
+				return collectionDocsLoadedMsg{docs}
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Escape):
+		m.browsingCollections = false
+		m.results = m.prevResults
+		m.cursor = 0
+		m.statusMsg = ""
+		m.updatePreviewContent()
+		return m, nil
+	}
+
+	return m, nil
 }
 
 func (m Model) updateCollectInput(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -713,8 +806,12 @@ func (m Model) View() string {
 		resultsStyle = styles.FocusedPanelStyle.Width(resultsWidth).Height(contentHeight)
 	}
 	resultsContent := m.renderResults(resultsWidth-2, contentHeight-2)
+	resultsPanelTitle := "Results"
+	if m.browsingCollections {
+		resultsPanelTitle = "Collections"
+	}
 	resultsPanel := resultsStyle.Render(
-		styles.PanelTitleStyle.Render("Results") + "\n" + resultsContent,
+		styles.PanelTitleStyle.Render(resultsPanelTitle) + "\n" + resultsContent,
 	)
 
 	// Preview panel
@@ -744,6 +841,10 @@ func (m Model) View() string {
 }
 
 func (m Model) renderResults(width, height int) string {
+	if m.browsingCollections {
+		return m.renderCollectionsList(width, height)
+	}
+
 	if len(m.results) == 0 {
 		return styles.ResultPreviewStyle.Render("No results. Press / to search.")
 	}
@@ -794,6 +895,50 @@ func (m Model) renderResults(width, height int) string {
 	// Show scroll indicator
 	if len(m.results) > visibleCount {
 		sb.WriteString(fmt.Sprintf("\n%d/%d", m.cursor+1, len(m.results)))
+	}
+
+	return sb.String()
+}
+
+func (m Model) renderCollectionsList(width, height int) string {
+	if len(m.collections) == 0 {
+		return styles.ResultPreviewStyle.Render("No collections. Use 'c' to create one.")
+	}
+
+	var sb strings.Builder
+	visibleCount := height / 2
+	if visibleCount < 1 {
+		visibleCount = 1
+	}
+
+	start := 0
+	if m.collectionCursor >= visibleCount {
+		start = m.collectionCursor - visibleCount + 1
+	}
+	end := start + visibleCount
+	if end > len(m.collections) {
+		end = len(m.collections)
+	}
+
+	for i := start; i < end; i++ {
+		col := m.collections[i]
+		count, _ := m.db.CountCollectionDocuments(context.Background(), col.ID)
+		label := fmt.Sprintf("%s (%d docs)", col.Name, count)
+		if len(label) > width-4 {
+			label = label[:width-7] + "..."
+		}
+
+		var line string
+		if i == m.collectionCursor {
+			line = styles.SelectedResultStyle.Render(label)
+		} else {
+			line = styles.ResultItemStyle.Render(label)
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	if len(m.collections) > visibleCount {
+		sb.WriteString(fmt.Sprintf("\n%d/%d", m.collectionCursor+1, len(m.collections)))
 	}
 
 	return sb.String()
@@ -851,6 +996,7 @@ func (m Model) renderHelp() string {
 		{"r", "Refresh index"},
 		{"t", "Add tag"},
 		{"c", "Add to collection"},
+		{"C", "Browse collections"},
 		{"g/G", "Go to start/end"},
 		{"Ctrl+u/d", "Half page up/down"},
 		{"Esc", "Cancel / Clear search"},
