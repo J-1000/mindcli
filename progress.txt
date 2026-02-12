@@ -185,3 +185,15 @@
 - [x] CLI `ask` command streams tokens to terminal
 - [x] Stream cancellation on new search or quit
 - [x] Tests with mock HTTP server for streaming, cancellation, and edge cases
+
+### Collections [COMPLETE]
+- [x] `collections` and `collection_documents` SQLite tables with foreign key cascades
+- [x] Collection struct (ID, Name, Description, Query, CreatedAt)
+- [x] Collection CRUD methods (Create, Get, GetByName, List, Rename, UpdateDescription, Delete, DeleteByName)
+- [x] Collection membership methods (AddToCollection, RemoveFromCollection, GetCollectionDocuments, CountCollectionDocuments, GetDocumentCollections)
+- [x] Enabled SQLite foreign keys for cascade deletes
+- [x] `mindcli collection create|delete|list|show|add|remove|rename` CLI command
+- [x] TUI add-to-collection mode (`c` key, auto-creates collection if missing)
+- [x] TUI browse collections mode (`C` key, list collections, enter to view docs)
+- [x] Collection badges in preview panel and results list
+- [x] Comprehensive storage tests for CRUD and membership (including cascade deletes)
