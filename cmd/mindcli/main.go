@@ -55,6 +55,8 @@ func run() error {
 			return runSearch(strings.Join(os.Args[2:], " "))
 		case "export":
 			return runExport(os.Args[2:])
+		case "tag":
+			return runTag(os.Args[2:])
 		case "ask":
 			if len(os.Args) < 3 {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
@@ -84,6 +86,7 @@ Usage:
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
   mindcli export "..." Export search results (--format json|csv|markdown)
+  mindcli tag ...      Manage document tags (add, remove, list)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
@@ -536,6 +539,98 @@ func runExport(args []string) error {
 	case "markdown":
 		return exportMarkdown(w, results)
 	}
+	return nil
+}
+
+func runTag(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mindcli tag <add|remove|list> [args...]")
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	switch args[0] {
+	case "add":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: mindcli tag add <doc-path> <tag>")
+		}
+		doc, err := db.GetDocumentByPath(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("document not found: %s", args[1])
+		}
+		if err := db.AddTag(ctx, doc.ID, args[2]); err != nil {
+			return fmt.Errorf("adding tag: %w", err)
+		}
+		fmt.Printf("Added tag %q to %s\n", args[2], doc.Title)
+
+	case "remove":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: mindcli tag remove <doc-path> <tag>")
+		}
+		doc, err := db.GetDocumentByPath(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("document not found: %s", args[1])
+		}
+		if err := db.RemoveTag(ctx, doc.ID, args[2]); err != nil {
+			return fmt.Errorf("removing tag: %w", err)
+		}
+		fmt.Printf("Removed tag %q from %s\n", args[2], doc.Title)
+
+	case "list":
+		if len(args) >= 2 {
+			// List tags for a specific document
+			doc, err := db.GetDocumentByPath(ctx, args[1])
+			if err != nil {
+				return fmt.Errorf("document not found: %s", args[1])
+			}
+			tags, err := db.GetTags(ctx, doc.ID)
+			if err != nil {
+				return fmt.Errorf("getting tags: %w", err)
+			}
+			if len(tags) == 0 {
+				fmt.Printf("No tags for %s\n", doc.Title)
+			} else {
+				fmt.Printf("Tags for %s:\n", doc.Title)
+				for _, tag := range tags {
+					fmt.Printf("  %s\n", tag)
+				}
+			}
+		} else {
+			// List all tags
+			tags, err := db.ListAllTags(ctx)
+			if err != nil {
+				return fmt.Errorf("listing tags: %w", err)
+			}
+			if len(tags) == 0 {
+				fmt.Println("No tags found.")
+			} else {
+				fmt.Println("All tags:")
+				for _, tag := range tags {
+					fmt.Printf("  %s\n", tag)
+				}
+			}
+		}
+
+	default:
+		return fmt.Errorf("unknown tag subcommand %q: use add, remove, or list", args[0])
+	}
+
 	return nil
 }
 
