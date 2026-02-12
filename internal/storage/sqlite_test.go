@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -942,5 +943,219 @@ func TestDeleteCollectionByName(t *testing.T) {
 	_, err := db.GetCollectionByName(ctx, "del-by-name")
 	if err != ErrNotFound {
 		t.Errorf("after delete, error = %v, want ErrNotFound", err)
+	}
+}
+
+// --- Collection membership tests ---
+
+func createTestDoc(t *testing.T, db *DB, id, path string) *Document {
+	t.Helper()
+	now := time.Now().UTC()
+	doc := &Document{
+		ID: id, Source: SourceMarkdown, Path: path,
+		Title: id, ContentHash: "h", IndexedAt: now, ModifiedAt: now,
+	}
+	if err := db.InsertDocument(context.Background(), doc); err != nil {
+		t.Fatalf("InsertDocument() error = %v", err)
+	}
+	return doc
+}
+
+func TestAddToCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+
+	if err := db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
+		t.Fatalf("AddToCollection() error = %v", err)
+	}
+
+	count, _ := db.CountCollectionDocuments(ctx, col.ID)
+	if count != 1 {
+		t.Errorf("CountCollectionDocuments() = %d, want 1", count)
+	}
+}
+
+func TestAddToCollectionIdempotent(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+
+	db.AddToCollection(ctx, col.ID, doc.ID)
+	// Second add should not error
+	if err := db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
+		t.Fatalf("AddToCollection() idempotent error = %v", err)
+	}
+
+	count, _ := db.CountCollectionDocuments(ctx, col.ID)
+	if count != 1 {
+		t.Errorf("after duplicate add, count = %d, want 1", count)
+	}
+}
+
+func TestRemoveFromCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+	db.AddToCollection(ctx, col.ID, doc.ID)
+
+	if err := db.RemoveFromCollection(ctx, col.ID, doc.ID); err != nil {
+		t.Fatalf("RemoveFromCollection() error = %v", err)
+	}
+
+	count, _ := db.CountCollectionDocuments(ctx, col.ID)
+	if count != 0 {
+		t.Errorf("after remove, count = %d, want 0", count)
+	}
+}
+
+func TestRemoveFromCollectionNotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+
+	err := db.RemoveFromCollection(ctx, col.ID, "nonexistent")
+	if err != ErrNotFound {
+		t.Errorf("RemoveFromCollection() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetCollectionDocuments(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+	d1 := createTestDoc(t, db, "d1", "/d1.md")
+	d2 := createTestDoc(t, db, "d2", "/d2.md")
+	db.AddToCollection(ctx, col.ID, d1.ID)
+	db.AddToCollection(ctx, col.ID, d2.ID)
+
+	docs, err := db.GetCollectionDocuments(ctx, col.ID)
+	if err != nil {
+		t.Fatalf("GetCollectionDocuments() error = %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("GetCollectionDocuments() returned %d, want 2", len(docs))
+	}
+}
+
+func TestGetCollectionDocumentsEmpty(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "empty-col"}
+	db.CreateCollection(ctx, col)
+
+	docs, err := db.GetCollectionDocuments(ctx, col.ID)
+	if err != nil {
+		t.Fatalf("GetCollectionDocuments() error = %v", err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("GetCollectionDocuments() returned %d, want 0", len(docs))
+	}
+}
+
+func TestCountCollectionDocuments(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+
+	count, _ := db.CountCollectionDocuments(ctx, col.ID)
+	if count != 0 {
+		t.Errorf("initially count = %d, want 0", count)
+	}
+
+	for i := 0; i < 3; i++ {
+		doc := createTestDoc(t, db, fmt.Sprintf("d%d", i), fmt.Sprintf("/d%d.md", i))
+		db.AddToCollection(ctx, col.ID, doc.ID)
+	}
+
+	count, _ = db.CountCollectionDocuments(ctx, col.ID)
+	if count != 3 {
+		t.Errorf("after 3 adds, count = %d, want 3", count)
+	}
+}
+
+func TestGetDocumentCollections(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c1 := &Collection{Name: "alpha"}
+	c2 := &Collection{Name: "beta"}
+	db.CreateCollection(ctx, c1)
+	db.CreateCollection(ctx, c2)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+
+	db.AddToCollection(ctx, c1.ID, doc.ID)
+	db.AddToCollection(ctx, c2.ID, doc.ID)
+
+	cols, err := db.GetDocumentCollections(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("GetDocumentCollections() error = %v", err)
+	}
+	if len(cols) != 2 {
+		t.Fatalf("GetDocumentCollections() returned %d, want 2", len(cols))
+	}
+	if cols[0].Name != "alpha" || cols[1].Name != "beta" {
+		t.Errorf("collections = [%s %s], want [alpha beta]", cols[0].Name, cols[1].Name)
+	}
+}
+
+func TestDeleteCollectionCascade(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "cascade"}
+	db.CreateCollection(ctx, col)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+	db.AddToCollection(ctx, col.ID, doc.ID)
+
+	db.DeleteCollection(ctx, col.ID)
+
+	// Memberships should be gone
+	cols, _ := db.GetDocumentCollections(ctx, doc.ID)
+	if len(cols) != 0 {
+		t.Errorf("after cascade delete, document still in %d collections", len(cols))
+	}
+}
+
+func TestDocumentDeleteCascade(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	col := &Collection{Name: "col1"}
+	db.CreateCollection(ctx, col)
+	doc := createTestDoc(t, db, "d1", "/d1.md")
+	db.AddToCollection(ctx, col.ID, doc.ID)
+
+	db.DeleteDocument(ctx, doc.ID)
+
+	count, _ := db.CountCollectionDocuments(ctx, col.ID)
+	if count != 0 {
+		t.Errorf("after document delete, collection count = %d, want 0", count)
 	}
 }
