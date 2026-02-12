@@ -145,6 +145,15 @@ func TagBadge(tag string) string {
 		Render("#" + tag)
 }
 
+// CollectionBadge renders a collection name as a colored badge.
+func CollectionBadge(name string) string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("117")).
+		Background(lipgloss.Color("24")).
+		Padding(0, 1).
+		Render("@" + name)
+}
+
 // Badge styles for source types.
 func SourceBadge(source string) lipgloss.Style {
 	colors := map[string]lipgloss.Color{

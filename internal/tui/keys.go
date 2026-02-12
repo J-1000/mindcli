@@ -23,7 +23,9 @@ type KeyMap struct {
 	HalfDown  key.Binding
 	GotoStart key.Binding
 	GotoEnd   key.Binding
-	Tag       key.Binding
+	Tag              key.Binding
+	Collection       key.Binding
+	BrowseCollections key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings.
@@ -104,6 +106,14 @@ func DefaultKeyMap() KeyMap {
 		Tag: key.NewBinding(
 			key.WithKeys("t"),
 			key.WithHelp("t", "add tag"),
+		),
+		Collection: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "add to collection"),
+		),
+		BrowseCollections: key.NewBinding(
+			key.WithKeys("C"),
+			key.WithHelp("C", "browse collections"),
 		),
 	}
 }
