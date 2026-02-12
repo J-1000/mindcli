@@ -13,6 +13,9 @@ import (
 // ErrNotFound is returned when a document is not found.
 var ErrNotFound = errors.New("document not found")
 
+// ErrCollectionExists is returned when a collection name already exists.
+var ErrCollectionExists = errors.New("collection already exists")
+
 // DB wraps a SQLite database connection.
 type DB struct {
 	db *sql.DB
@@ -79,6 +82,22 @@ func (d *DB) migrate() error {
 			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag)`,
+		`CREATE TABLE IF NOT EXISTS collections (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL DEFAULT '',
+			query TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS collection_documents (
+			collection_id TEXT NOT NULL,
+			document_id TEXT NOT NULL,
+			added_at DATETIME NOT NULL,
+			PRIMARY KEY (collection_id, document_id),
+			FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_collection_documents_doc ON collection_documents(document_id)`,
 		`CREATE TABLE IF NOT EXISTS schema_version (
 			version INTEGER PRIMARY KEY
 		)`,
