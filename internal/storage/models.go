@@ -58,6 +58,15 @@ type Chunk struct {
 	EndPos     int    `json:"end_pos"`
 }
 
+// Collection represents a named group of documents.
+type Collection struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Query       string    `json:"query,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // SearchResult represents a search result with scoring information.
 type SearchResult struct {
 	Document    *Document `json:"document"`
