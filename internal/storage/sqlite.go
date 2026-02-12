@@ -705,6 +705,103 @@ func (d *DB) DeleteCollection(ctx context.Context, id string) error {
 	return nil
 }
 
+// AddToCollection adds a document to a collection (idempotent).
+func (d *DB) AddToCollection(ctx context.Context, collectionID, documentID string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO collection_documents (collection_id, document_id, added_at) VALUES (?, ?, ?)`,
+		collectionID, documentID, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("adding to collection: %w", err)
+	}
+	return nil
+}
+
+// RemoveFromCollection removes a document from a collection.
+func (d *DB) RemoveFromCollection(ctx context.Context, collectionID, documentID string) error {
+	result, err := d.db.ExecContext(ctx,
+		`DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?`,
+		collectionID, documentID,
+	)
+	if err != nil {
+		return fmt.Errorf("removing from collection: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetCollectionDocuments returns all documents in a collection.
+func (d *DB) GetCollectionDocuments(ctx context.Context, collectionID string) ([]*Document, error) {
+	sqlQuery := `
+		SELECT d.id, d.source, d.path, d.title, d.content, d.preview, d.metadata, d.content_hash, d.indexed_at, d.modified_at
+		FROM documents d
+		INNER JOIN collection_documents cd ON d.id = cd.document_id
+		WHERE cd.collection_id = ?
+		ORDER BY cd.added_at DESC
+	`
+	rows, err := d.db.QueryContext(ctx, sqlQuery, collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("getting collection documents: %w", err)
+	}
+	defer rows.Close()
+
+	var docs []*Document
+	for rows.Next() {
+		doc, err := d.scanDocumentRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+	return docs, rows.Err()
+}
+
+// CountCollectionDocuments returns the number of documents in a collection.
+func (d *DB) CountCollectionDocuments(ctx context.Context, collectionID string) (int, error) {
+	var count int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM collection_documents WHERE collection_id = ?`, collectionID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting collection documents: %w", err)
+	}
+	return count, nil
+}
+
+// GetDocumentCollections returns all collections a document belongs to.
+func (d *DB) GetDocumentCollections(ctx context.Context, documentID string) ([]*Collection, error) {
+	sqlQuery := `
+		SELECT c.id, c.name, c.description, c.query, c.created_at
+		FROM collections c
+		INNER JOIN collection_documents cd ON c.id = cd.collection_id
+		WHERE cd.document_id = ?
+		ORDER BY c.name
+	`
+	rows, err := d.db.QueryContext(ctx, sqlQuery, documentID)
+	if err != nil {
+		return nil, fmt.Errorf("getting document collections: %w", err)
+	}
+	defer rows.Close()
+
+	var collections []*Collection
+	for rows.Next() {
+		var c Collection
+		var createdAt time.Time
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt); err != nil {
+			return nil, fmt.Errorf("scanning collection: %w", err)
+		}
+		c.CreatedAt = createdAt
+		collections = append(collections, &c)
+	}
+	return collections, rows.Err()
+}
+
 // DeleteCollectionByName deletes a collection by name.
 func (d *DB) DeleteCollectionByName(ctx context.Context, name string) error {
 	result, err := d.db.ExecContext(ctx, "DELETE FROM collections WHERE name = ?", name)
