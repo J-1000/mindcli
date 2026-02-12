@@ -737,3 +737,210 @@ func TestFindByTag(t *testing.T) {
 		t.Errorf("FindByTag(nonexistent) returned %d docs, want 0", len(docs))
 	}
 }
+
+func TestCreateCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c := &Collection{Name: "reading-list", Description: "Books to read"}
+	if err := db.CreateCollection(ctx, c); err != nil {
+		t.Fatalf("CreateCollection() error = %v", err)
+	}
+	if c.ID == "" {
+		t.Error("CreateCollection() did not generate ID")
+	}
+	if c.CreatedAt.IsZero() {
+		t.Error("CreateCollection() did not set CreatedAt")
+	}
+}
+
+func TestCreateCollectionDuplicate(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c1 := &Collection{Name: "dupe"}
+	if err := db.CreateCollection(ctx, c1); err != nil {
+		t.Fatalf("CreateCollection() error = %v", err)
+	}
+	c2 := &Collection{Name: "dupe"}
+	err := db.CreateCollection(ctx, c2)
+	if err != ErrCollectionExists {
+		t.Errorf("CreateCollection() error = %v, want ErrCollectionExists", err)
+	}
+}
+
+func TestGetCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c := &Collection{Name: "test-col", Description: "desc", Query: "golang"}
+	db.CreateCollection(ctx, c)
+
+	got, err := db.GetCollection(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCollection() error = %v", err)
+	}
+	if got.Name != "test-col" {
+		t.Errorf("Name = %q, want %q", got.Name, "test-col")
+	}
+	if got.Description != "desc" {
+		t.Errorf("Description = %q, want %q", got.Description, "desc")
+	}
+	if got.Query != "golang" {
+		t.Errorf("Query = %q, want %q", got.Query, "golang")
+	}
+}
+
+func TestGetCollectionNotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.GetCollection(context.Background(), "nonexistent")
+	if err != ErrNotFound {
+		t.Errorf("GetCollection() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetCollectionByName(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c := &Collection{Name: "by-name"}
+	db.CreateCollection(ctx, c)
+
+	got, err := db.GetCollectionByName(ctx, "by-name")
+	if err != nil {
+		t.Fatalf("GetCollectionByName() error = %v", err)
+	}
+	if got.ID != c.ID {
+		t.Errorf("ID = %q, want %q", got.ID, c.ID)
+	}
+}
+
+func TestGetCollectionByNameNotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.GetCollectionByName(context.Background(), "nope")
+	if err != ErrNotFound {
+		t.Errorf("GetCollectionByName() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListCollections(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	db.CreateCollection(ctx, &Collection{Name: "beta"})
+	db.CreateCollection(ctx, &Collection{Name: "alpha"})
+	db.CreateCollection(ctx, &Collection{Name: "gamma"})
+
+	cols, err := db.ListCollections(ctx)
+	if err != nil {
+		t.Fatalf("ListCollections() error = %v", err)
+	}
+	if len(cols) != 3 {
+		t.Fatalf("ListCollections() returned %d, want 3", len(cols))
+	}
+	// Should be ordered by name
+	if cols[0].Name != "alpha" || cols[1].Name != "beta" || cols[2].Name != "gamma" {
+		t.Errorf("ListCollections() order = [%s %s %s], want [alpha beta gamma]",
+			cols[0].Name, cols[1].Name, cols[2].Name)
+	}
+}
+
+func TestListCollectionsEmpty(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cols, err := db.ListCollections(context.Background())
+	if err != nil {
+		t.Fatalf("ListCollections() error = %v", err)
+	}
+	if len(cols) != 0 {
+		t.Errorf("ListCollections() returned %d, want 0", len(cols))
+	}
+}
+
+func TestRenameCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c := &Collection{Name: "old-name"}
+	db.CreateCollection(ctx, c)
+
+	if err := db.RenameCollection(ctx, c.ID, "new-name"); err != nil {
+		t.Fatalf("RenameCollection() error = %v", err)
+	}
+
+	got, _ := db.GetCollection(ctx, c.ID)
+	if got.Name != "new-name" {
+		t.Errorf("Name = %q, want %q", got.Name, "new-name")
+	}
+}
+
+func TestRenameCollectionDuplicate(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	db.CreateCollection(ctx, &Collection{Name: "taken"})
+	c := &Collection{Name: "rename-me"}
+	db.CreateCollection(ctx, c)
+
+	err := db.RenameCollection(ctx, c.ID, "taken")
+	if err != ErrCollectionExists {
+		t.Errorf("RenameCollection() error = %v, want ErrCollectionExists", err)
+	}
+}
+
+func TestDeleteCollection(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c := &Collection{Name: "delete-me"}
+	db.CreateCollection(ctx, c)
+
+	if err := db.DeleteCollection(ctx, c.ID); err != nil {
+		t.Fatalf("DeleteCollection() error = %v", err)
+	}
+
+	_, err := db.GetCollection(ctx, c.ID)
+	if err != ErrNotFound {
+		t.Errorf("after delete, GetCollection() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteCollectionNotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	err := db.DeleteCollection(context.Background(), "nonexistent")
+	if err != ErrNotFound {
+		t.Errorf("DeleteCollection() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteCollectionByName(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	db.CreateCollection(ctx, &Collection{Name: "del-by-name"})
+
+	if err := db.DeleteCollectionByName(ctx, "del-by-name"); err != nil {
+		t.Fatalf("DeleteCollectionByName() error = %v", err)
+	}
+
+	_, err := db.GetCollectionByName(ctx, "del-by-name")
+	if err != ErrNotFound {
+		t.Errorf("after delete, error = %v, want ErrNotFound", err)
+	}
+}
