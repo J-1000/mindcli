@@ -136,6 +136,15 @@ var (
 var SpinnerStyle = lipgloss.NewStyle().
 	Foreground(ColorPrimary)
 
+// TagBadge renders a tag as a colored badge.
+func TagBadge(tag string) string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("62")).
+		Padding(0, 1).
+		Render("#" + tag)
+}
+
 // Badge styles for source types.
 func SourceBadge(source string) lipgloss.Style {
 	colors := map[string]lipgloss.Color{

@@ -48,6 +48,8 @@ type Model struct {
 	statusMsg   string
 	statusIsErr bool
 	answerText  string // LLM-generated answer for the current query
+	tagging     bool   // true when tag input mode is active
+	tagInput    textinput.Model
 
 	// Dimensions
 	width  int
@@ -71,6 +73,10 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 
 	vp := viewport.New(0, 0)
 
+	tagTi := textinput.New()
+	tagTi.Placeholder = "Enter tag name..."
+	tagTi.CharLimit = 64
+
 	return Model{
 		db:          db,
 		search:      searchIndex,
@@ -78,6 +84,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		llm:         llm,
 		searchInput: ti,
 		preview:     vp,
+		tagInput:    tagTi,
 		panel:       PanelSearch,
 		keys:        DefaultKeyMap(),
 	}
@@ -198,6 +205,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle tag input mode first
+		if m.tagging {
+			return m.updateTagInput(msg)
+		}
+
 		// Handle global keys first
 		switch {
 		case key.Matches(msg, m.keys.Quit):
@@ -370,6 +382,16 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, m.keys.Tag):
+		if m.cursor < len(m.results) {
+			m.tagging = true
+			m.tagInput.SetValue("")
+			m.tagInput.Focus()
+			m.statusMsg = "Enter tag for: " + m.results[m.cursor].Title
+			m.statusIsErr = false
+		}
+		return m, nil
+
 	case key.Matches(msg, m.keys.Refresh):
 		m.statusMsg = "Refreshing..."
 		m.statusIsErr = false
@@ -377,6 +399,48 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		tag := strings.TrimSpace(m.tagInput.Value())
+		if tag != "" && m.cursor < len(m.results) {
+			doc := m.results[m.cursor]
+			ctx := context.Background()
+			if err := m.db.AddTag(ctx, doc.ID, tag); err != nil {
+				m.statusMsg = "Tag error: " + err.Error()
+				m.statusIsErr = true
+			} else {
+				m.statusMsg = fmt.Sprintf("Added tag %q to %s", tag, doc.Title)
+				m.statusIsErr = false
+				// Update metadata to reflect the new tag immediately
+				if doc.Metadata == nil {
+					doc.Metadata = make(map[string]string)
+				}
+				existing := doc.Metadata["tags"]
+				if existing != "" {
+					doc.Metadata["tags"] = existing + "," + tag
+				} else {
+					doc.Metadata["tags"] = tag
+				}
+				m.updatePreviewContent()
+			}
+		}
+		m.tagging = false
+		m.tagInput.Blur()
+		return m, nil
+
+	case tea.KeyEsc:
+		m.tagging = false
+		m.tagInput.Blur()
+		m.statusMsg = ""
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.tagInput, cmd = m.tagInput.Update(msg)
+	return m, cmd
 }
 
 // openFile opens a file with the system's default application.
@@ -459,7 +523,11 @@ func (m *Model) updatePreviewContent() {
 	sb.WriteString(styles.ResultSourceStyle.Render(string(doc.Source)))
 	sb.WriteString(" • ")
 	sb.WriteString(styles.PreviewMetadataStyle.Render(doc.Path))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
+	if tags := doc.Metadata["tags"]; tags != "" {
+		sb.WriteString("Tags: " + tags + "\n")
+	}
+	sb.WriteString("\n")
 
 	content := doc.Content
 	if len(content) > 2000 {
@@ -571,7 +639,13 @@ func (m Model) renderResults(width, height int) string {
 		}
 
 		source := styles.SourceBadge(string(doc.Source)).Render(string(doc.Source))
-		sb.WriteString(line + " " + source + "\n")
+		var tagStr string
+		if tags := doc.Metadata["tags"]; tags != "" {
+			for _, t := range strings.Split(tags, ",") {
+				tagStr += " " + styles.TagBadge(strings.TrimSpace(t))
+			}
+		}
+		sb.WriteString(line + " " + source + tagStr + "\n")
 	}
 
 	// Show scroll indicator
@@ -583,6 +657,13 @@ func (m Model) renderResults(width, height int) string {
 }
 
 func (m Model) renderStatusBar() string {
+	if m.tagging {
+		return styles.StatusBarStyle.Render(
+			styles.HelpKeyStyle.Render("Tag: ") + m.tagInput.View() +
+				styles.HelpDescStyle.Render("  (enter to save, esc to cancel)"),
+		)
+	}
+
 	var status string
 	if m.statusIsErr {
 		status = styles.StatusErrorStyle.Render(m.statusMsg)
@@ -619,6 +700,7 @@ func (m Model) renderHelp() string {
 		{"o", "Open in external app"},
 		{"y", "Copy path to clipboard"},
 		{"r", "Refresh index"},
+		{"t", "Add tag"},
 		{"g/G", "Go to start/end"},
 		{"Ctrl+u/d", "Half page up/down"},
 		{"Esc", "Cancel / Clear search"},

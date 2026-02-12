@@ -23,6 +23,7 @@ type KeyMap struct {
 	HalfDown  key.Binding
 	GotoStart key.Binding
 	GotoEnd   key.Binding
+	Tag       key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings.
@@ -99,6 +100,10 @@ func DefaultKeyMap() KeyMap {
 		GotoEnd: key.NewBinding(
 			key.WithKeys("end", "G"),
 			key.WithHelp("G", "go to end"),
+		),
+		Tag: key.NewBinding(
+			key.WithKeys("t"),
+			key.WithHelp("t", "add tag"),
 		),
 	}
 }
