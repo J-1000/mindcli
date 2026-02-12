@@ -160,3 +160,28 @@
   - [x] Config tests: LLMModel default, YAML round-trip
   - [x] CLI tests: version vars, printUsage, truncatePath, progress reporter
   - [x] Integration tests: end-to-end search with temp DB+Bleve, source filter, Ollama fallback
+
+## Post-Phase Features [COMPLETE]
+
+### Export [COMPLETE]
+- [x] `mindcli export "query" --format json|csv|markdown` CLI command
+- [x] Format functions in dedicated `cmd/mindcli/export.go`
+- [x] Supports --output file and --limit flags
+- [x] Hybrid search with BM25-only fallback
+- [x] Tests for all three format outputs
+
+### Tagging [COMPLETE]
+- [x] `document_tags` SQLite table with manual/auto distinction
+- [x] Tag CRUD methods (AddTag, RemoveTag, GetTags, ListAllTags, GetDocumentByPath)
+- [x] TUI tag display (colored badges in results, metadata in preview)
+- [x] TUI tag input mode (`t` key to add tags)
+- [x] `mindcli tag add|remove|list` CLI command
+- [x] Storage and CLI tests
+
+### Streaming LLM [COMPLETE]
+- [x] Extracted `buildRAGPrompt` helper for reuse
+- [x] `GenerateStream` and `GenerateAnswerStream` with callback-based token delivery
+- [x] Channel-based Bubble Tea integration for real-time TUI streaming
+- [x] CLI `ask` command streams tokens to terminal
+- [x] Stream cancellation on new search or quit
+- [x] Tests with mock HTTP server for streaming, cancellation, and edge cases

@@ -8,8 +8,10 @@ Search across your notes, PDFs, emails, browser history, and clipboard — all f
 
 - **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), browser history (Chrome/Firefox/Safari), clipboard
 - **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
-- **Local AI** — Embeddings and LLM-powered answers via Ollama (no API keys, no cloud)
-- **Beautiful TUI** — Three-panel Bubble Tea interface with live preview
+- **Local AI** — Embeddings and streaming LLM answers via Ollama (no API keys, no cloud)
+- **Beautiful TUI** — Three-panel Bubble Tea interface with live preview and real-time streaming
+- **Export** — Search results to JSON, CSV, or Markdown
+- **Tagging** — Manual tags on any document, displayed in TUI and searchable
 - **Fast** — Concurrent worker pool indexing, incremental updates, content-hash caching
 - **File watcher** — Real-time re-indexing via fsnotify with debouncing
 - **Private** — All data stays on your machine, password detection for clipboard
@@ -50,7 +52,10 @@ mindcli index -paths ~/notes                 # Index specific paths
 mindcli index -watch                         # Index then watch for changes
 mindcli watch                                # Watch directories for changes
 mindcli search "Go concurrency"              # Search and print results
-mindcli ask "what did I write about Go?"     # Ask a question (RAG via Ollama)
+mindcli export "Go" --format json            # Export results as JSON/CSV/Markdown
+mindcli tag add ~/notes/foo.md mytag         # Add a tag to a document
+mindcli tag list                             # List all tags
+mindcli ask "what did I write about Go?"     # Ask a question (streaming RAG via Ollama)
 mindcli config                               # Initialize default config file
 mindcli version                              # Show version info
 mindcli help                                 # Show help
@@ -67,6 +72,7 @@ mindcli help                                 # Show help
 | `o` | Open in external app |
 | `y` | Copy file path to clipboard |
 | `r` | Refresh document list |
+| `t` | Add tag to selected document |
 | `g` / `G` | Go to start / end of results |
 | `Ctrl+u` / `Ctrl+d` | Half page up / down (preview) |
 | `PgUp` / `PgDn` | Page up / down |
