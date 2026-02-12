@@ -57,6 +57,8 @@ func run() error {
 			return runExport(os.Args[2:])
 		case "tag":
 			return runTag(os.Args[2:])
+		case "collection":
+			return runCollection(os.Args[2:])
 		case "ask":
 			if len(os.Args) < 3 {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
@@ -87,6 +89,7 @@ Usage:
   mindcli search "..." Search and print results
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli tag ...      Manage document tags (add, remove, list)
+  mindcli collection   Manage collections (create, delete, list, show, add, remove, rename)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
@@ -629,6 +632,151 @@ func runTag(args []string) error {
 
 	default:
 		return fmt.Errorf("unknown tag subcommand %q: use add, remove, or list", args[0])
+	}
+
+	return nil
+}
+
+func runCollection(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mindcli collection <create|delete|list|show|add|remove|rename> [args...]")
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: mindcli collection create <name> [--query \"...\"] [--description \"...\"]")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("collection-create", flag.ExitOnError)
+		queryStr := fs.String("query", "", "Saved search query")
+		desc := fs.String("description", "", "Collection description")
+		fs.Parse(args[2:])
+
+		col := &storage.Collection{Name: name, Query: *queryStr, Description: *desc}
+		if err := db.CreateCollection(ctx, col); err != nil {
+			return fmt.Errorf("creating collection: %w", err)
+		}
+		fmt.Printf("Created collection %q\n", name)
+
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: mindcli collection delete <name>")
+		}
+		if err := db.DeleteCollectionByName(ctx, args[1]); err != nil {
+			return fmt.Errorf("deleting collection: %w", err)
+		}
+		fmt.Printf("Deleted collection %q\n", args[1])
+
+	case "list":
+		cols, err := db.ListCollections(ctx)
+		if err != nil {
+			return fmt.Errorf("listing collections: %w", err)
+		}
+		if len(cols) == 0 {
+			fmt.Println("No collections found.")
+		} else {
+			for _, c := range cols {
+				count, _ := db.CountCollectionDocuments(ctx, c.ID)
+				desc := ""
+				if c.Description != "" {
+					desc = " - " + c.Description
+				}
+				fmt.Printf("  %s (%d docs)%s\n", c.Name, count, desc)
+			}
+		}
+
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: mindcli collection show <name>")
+		}
+		col, err := db.GetCollectionByName(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("collection not found: %s", args[1])
+		}
+		count, _ := db.CountCollectionDocuments(ctx, col.ID)
+		fmt.Printf("Collection: %s\n", col.Name)
+		if col.Description != "" {
+			fmt.Printf("Description: %s\n", col.Description)
+		}
+		if col.Query != "" {
+			fmt.Printf("Query: %s\n", col.Query)
+		}
+		fmt.Printf("Documents: %d\n", count)
+		fmt.Printf("Created: %s\n", col.CreatedAt.Format("2006-01-02 15:04:05"))
+
+		docs, _ := db.GetCollectionDocuments(ctx, col.ID)
+		for i, doc := range docs {
+			fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
+		}
+
+	case "add":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: mindcli collection add <collection-name> <doc-path>")
+		}
+		col, err := db.GetCollectionByName(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("collection not found: %s", args[1])
+		}
+		doc, err := db.GetDocumentByPath(ctx, args[2])
+		if err != nil {
+			return fmt.Errorf("document not found: %s", args[2])
+		}
+		if err := db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
+			return fmt.Errorf("adding to collection: %w", err)
+		}
+		fmt.Printf("Added %q to collection %q\n", doc.Title, col.Name)
+
+	case "remove":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: mindcli collection remove <collection-name> <doc-path>")
+		}
+		col, err := db.GetCollectionByName(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("collection not found: %s", args[1])
+		}
+		doc, err := db.GetDocumentByPath(ctx, args[2])
+		if err != nil {
+			return fmt.Errorf("document not found: %s", args[2])
+		}
+		if err := db.RemoveFromCollection(ctx, col.ID, doc.ID); err != nil {
+			return fmt.Errorf("removing from collection: %w", err)
+		}
+		fmt.Printf("Removed %q from collection %q\n", doc.Title, col.Name)
+
+	case "rename":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: mindcli collection rename <old-name> <new-name>")
+		}
+		col, err := db.GetCollectionByName(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("collection not found: %s", args[1])
+		}
+		if err := db.RenameCollection(ctx, col.ID, args[2]); err != nil {
+			return fmt.Errorf("renaming collection: %w", err)
+		}
+		fmt.Printf("Renamed collection %q to %q\n", args[1], args[2])
+
+	default:
+		return fmt.Errorf("unknown collection subcommand %q: use create, delete, list, show, add, remove, or rename", args[0])
 	}
 
 	return nil
