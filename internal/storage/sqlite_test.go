@@ -570,3 +570,170 @@ func TestChunks(t *testing.T) {
 		t.Errorf("GetChunksByDocument() after delete returned %d chunks, want 0", len(retrieved))
 	}
 }
+
+func TestAddAndGetTags(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	doc := &Document{
+		ID: "tag-doc", Source: SourceMarkdown, Path: "/tag.md",
+		ContentHash: "h", IndexedAt: now, ModifiedAt: now,
+	}
+	if err := db.InsertDocument(ctx, doc); err != nil {
+		t.Fatalf("InsertDocument() error = %v", err)
+	}
+
+	// Add manual tags
+	if err := db.AddTag(ctx, doc.ID, "golang"); err != nil {
+		t.Fatalf("AddTag() error = %v", err)
+	}
+	if err := db.AddTag(ctx, doc.ID, "tutorial"); err != nil {
+		t.Fatalf("AddTag() error = %v", err)
+	}
+
+	// Add auto tag
+	if err := db.AddAutoTag(ctx, doc.ID, "concurrency"); err != nil {
+		t.Fatalf("AddAutoTag() error = %v", err)
+	}
+
+	// Get all tags
+	tags, err := db.GetTags(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("GetTags() error = %v", err)
+	}
+	if len(tags) != 3 {
+		t.Fatalf("GetTags() returned %d tags, want 3", len(tags))
+	}
+
+	// Tags should be sorted alphabetically
+	if tags[0] != "concurrency" || tags[1] != "golang" || tags[2] != "tutorial" {
+		t.Errorf("GetTags() = %v, want [concurrency golang tutorial]", tags)
+	}
+
+	// Duplicate add should be ignored
+	if err := db.AddTag(ctx, doc.ID, "golang"); err != nil {
+		t.Fatalf("AddTag() duplicate error = %v", err)
+	}
+	tags, _ = db.GetTags(ctx, doc.ID)
+	if len(tags) != 3 {
+		t.Errorf("after duplicate add, got %d tags, want 3", len(tags))
+	}
+}
+
+func TestRemoveTag(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	doc := &Document{
+		ID: "rm-tag-doc", Source: SourceMarkdown, Path: "/rm.md",
+		ContentHash: "h", IndexedAt: now, ModifiedAt: now,
+	}
+	db.InsertDocument(ctx, doc)
+	db.AddTag(ctx, doc.ID, "manual-tag")
+	db.AddAutoTag(ctx, doc.ID, "auto-tag")
+
+	// Remove manual tag should work
+	if err := db.RemoveTag(ctx, doc.ID, "manual-tag"); err != nil {
+		t.Fatalf("RemoveTag() error = %v", err)
+	}
+
+	// Remove auto tag should fail (only removes manual)
+	err := db.RemoveTag(ctx, doc.ID, "auto-tag")
+	if err != ErrNotFound {
+		t.Errorf("RemoveTag(auto-tag) error = %v, want ErrNotFound", err)
+	}
+
+	// Auto tag should still be there
+	tags, _ := db.GetTags(ctx, doc.ID)
+	if len(tags) != 1 || tags[0] != "auto-tag" {
+		t.Errorf("GetTags() = %v, want [auto-tag]", tags)
+	}
+
+	// Remove nonexistent tag
+	err = db.RemoveTag(ctx, doc.ID, "nonexistent")
+	if err != ErrNotFound {
+		t.Errorf("RemoveTag(nonexistent) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListAllTags(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	doc1 := &Document{ID: "t1", Source: SourceMarkdown, Path: "/1.md", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
+	doc2 := &Document{ID: "t2", Source: SourceMarkdown, Path: "/2.md", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
+	db.InsertDocument(ctx, doc1)
+	db.InsertDocument(ctx, doc2)
+
+	db.AddTag(ctx, doc1.ID, "golang")
+	db.AddTag(ctx, doc1.ID, "concurrency")
+	db.AddTag(ctx, doc2.ID, "golang")
+	db.AddTag(ctx, doc2.ID, "testing")
+
+	tags, err := db.ListAllTags(ctx)
+	if err != nil {
+		t.Fatalf("ListAllTags() error = %v", err)
+	}
+	if len(tags) != 3 {
+		t.Fatalf("ListAllTags() returned %d tags, want 3 (unique)", len(tags))
+	}
+	if tags[0] != "concurrency" || tags[1] != "golang" || tags[2] != "testing" {
+		t.Errorf("ListAllTags() = %v, want [concurrency golang testing]", tags)
+	}
+}
+
+func TestFindByTag(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	doc1 := &Document{ID: "f1", Source: SourceMarkdown, Path: "/1.md", Title: "Go Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
+	doc2 := &Document{ID: "f2", Source: SourceMarkdown, Path: "/2.md", Title: "Rust Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
+	doc3 := &Document{ID: "f3", Source: SourceMarkdown, Path: "/3.md", Title: "Python Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
+	db.InsertDocument(ctx, doc1)
+	db.InsertDocument(ctx, doc2)
+	db.InsertDocument(ctx, doc3)
+
+	db.AddTag(ctx, doc1.ID, "programming")
+	db.AddTag(ctx, doc2.ID, "programming")
+	db.AddTag(ctx, doc3.ID, "scripting")
+
+	docs, err := db.FindByTag(ctx, "programming")
+	if err != nil {
+		t.Fatalf("FindByTag() error = %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("FindByTag(programming) returned %d docs, want 2", len(docs))
+	}
+
+	docs, err = db.FindByTag(ctx, "scripting")
+	if err != nil {
+		t.Fatalf("FindByTag() error = %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("FindByTag(scripting) returned %d docs, want 1", len(docs))
+	}
+	if docs[0].Title != "Python Doc" {
+		t.Errorf("FindByTag(scripting)[0].Title = %q, want %q", docs[0].Title, "Python Doc")
+	}
+
+	// Nonexistent tag
+	docs, err = db.FindByTag(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("FindByTag(nonexistent) error = %v", err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("FindByTag(nonexistent) returned %d docs, want 0", len(docs))
+	}
+}

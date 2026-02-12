@@ -71,6 +71,14 @@ func (d *DB) migrate() error {
 			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id)`,
+		`CREATE TABLE IF NOT EXISTS document_tags (
+			document_id TEXT NOT NULL,
+			tag TEXT NOT NULL,
+			manual BOOLEAN NOT NULL DEFAULT 1,
+			PRIMARY KEY (document_id, tag),
+			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag)`,
 		`CREATE TABLE IF NOT EXISTS schema_version (
 			version INTEGER PRIMARY KEY
 		)`,
@@ -431,4 +439,116 @@ func (d *DB) scanDocumentRows(rows *sql.Rows) (*Document, error) {
 	}
 
 	return &doc, nil
+}
+
+// AddTag adds a manual tag to a document.
+func (d *DB) AddTag(ctx context.Context, docID, tag string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO document_tags (document_id, tag, manual) VALUES (?, ?, 1)`,
+		docID, tag,
+	)
+	if err != nil {
+		return fmt.Errorf("adding tag: %w", err)
+	}
+	return nil
+}
+
+// AddAutoTag adds an auto-extracted tag to a document.
+func (d *DB) AddAutoTag(ctx context.Context, docID, tag string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO document_tags (document_id, tag, manual) VALUES (?, ?, 0)`,
+		docID, tag,
+	)
+	if err != nil {
+		return fmt.Errorf("adding auto tag: %w", err)
+	}
+	return nil
+}
+
+// RemoveTag removes a manual tag from a document.
+func (d *DB) RemoveTag(ctx context.Context, docID, tag string) error {
+	result, err := d.db.ExecContext(ctx,
+		`DELETE FROM document_tags WHERE document_id = ? AND tag = ? AND manual = 1`,
+		docID, tag,
+	)
+	if err != nil {
+		return fmt.Errorf("removing tag: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetTags returns all tags for a document (both manual and auto-extracted).
+func (d *DB) GetTags(ctx context.Context, docID string) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT tag FROM document_tags WHERE document_id = ? ORDER BY tag`,
+		docID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("scanning tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+	return tags, rows.Err()
+}
+
+// ListAllTags returns all unique tags across all documents.
+func (d *DB) ListAllTags(ctx context.Context) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT DISTINCT tag FROM document_tags ORDER BY tag`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying all tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("scanning tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+	return tags, rows.Err()
+}
+
+// FindByTag returns all documents with a given tag.
+func (d *DB) FindByTag(ctx context.Context, tag string) ([]*Document, error) {
+	sqlQuery := `
+		SELECT d.id, d.source, d.path, d.title, d.content, d.preview, d.metadata, d.content_hash, d.indexed_at, d.modified_at
+		FROM documents d
+		INNER JOIN document_tags dt ON d.id = dt.document_id
+		WHERE dt.tag = ?
+		ORDER BY d.modified_at DESC
+	`
+	rows, err := d.db.QueryContext(ctx, sqlQuery, tag)
+	if err != nil {
+		return nil, fmt.Errorf("finding by tag: %w", err)
+	}
+	defer rows.Close()
+
+	var docs []*Document
+	for rows.Next() {
+		doc, err := d.scanDocumentRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+	return docs, rows.Err()
 }
