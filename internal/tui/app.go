@@ -50,6 +50,8 @@ type Model struct {
 	answerText   string // LLM-generated answer for the current query
 	tagging      bool   // true when tag input mode is active
 	tagInput     textinput.Model
+	collecting   bool   // true when collection input mode is active
+	collectInput textinput.Model
 	streaming    bool               // true while streaming LLM answer
 	streamCh     chan streamChunkMsg // channel for streaming tokens
 	streamCancel context.CancelFunc // cancel in-flight stream
@@ -80,6 +82,10 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 	tagTi.Placeholder = "Enter tag name..."
 	tagTi.CharLimit = 64
 
+	collectTi := textinput.New()
+	collectTi.Placeholder = "Enter collection name..."
+	collectTi.CharLimit = 64
+
 	return Model{
 		db:          db,
 		search:      searchIndex,
@@ -88,6 +94,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		searchInput: ti,
 		preview:     vp,
 		tagInput:    tagTi,
+		collectInput: collectTi,
 		panel:       PanelSearch,
 		keys:        DefaultKeyMap(),
 	}
@@ -191,9 +198,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Handle tag input mode first
+		// Handle modal input modes first
 		if m.tagging {
 			return m.updateTagInput(msg)
+		}
+		if m.collecting {
+			return m.updateCollectInput(msg)
 		}
 
 		// Handle global keys first
@@ -393,6 +403,16 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, m.keys.Collection):
+		if m.cursor < len(m.results) {
+			m.collecting = true
+			m.collectInput.SetValue("")
+			m.collectInput.Focus()
+			m.statusMsg = "Enter collection name:"
+			m.statusIsErr = false
+		}
+		return m, nil
+
 	case key.Matches(msg, m.keys.Refresh):
 		m.statusMsg = "Refreshing..."
 		m.statusIsErr = false
@@ -441,6 +461,53 @@ func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.tagInput, cmd = m.tagInput.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateCollectInput(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		name := strings.TrimSpace(m.collectInput.Value())
+		if name != "" && m.cursor < len(m.results) {
+			doc := m.results[m.cursor]
+			ctx := context.Background()
+
+			// Look up or create collection by name.
+			col, err := m.db.GetCollectionByName(ctx, name)
+			if err != nil {
+				// Collection doesn't exist, create it.
+				col = &storage.Collection{Name: name}
+				if createErr := m.db.CreateCollection(ctx, col); createErr != nil {
+					m.statusMsg = "Collection error: " + createErr.Error()
+					m.statusIsErr = true
+					m.collecting = false
+					m.collectInput.Blur()
+					return m, nil
+				}
+			}
+
+			if err := m.db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
+				m.statusMsg = "Collection error: " + err.Error()
+				m.statusIsErr = true
+			} else {
+				m.statusMsg = fmt.Sprintf("Added to collection %q", name)
+				m.statusIsErr = false
+				m.updatePreviewContent()
+			}
+		}
+		m.collecting = false
+		m.collectInput.Blur()
+		return m, nil
+
+	case tea.KeyEsc:
+		m.collecting = false
+		m.collectInput.Blur()
+		m.statusMsg = ""
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.collectInput, cmd = m.collectInput.Update(msg)
 	return m, cmd
 }
 
@@ -593,6 +660,16 @@ func (m *Model) updatePreviewContent() {
 	if tags := doc.Metadata["tags"]; tags != "" {
 		sb.WriteString("Tags: " + tags + "\n")
 	}
+	// Show collection memberships.
+	if cols, err := m.db.GetDocumentCollections(context.Background(), doc.ID); err == nil && len(cols) > 0 {
+		for i, c := range cols {
+			if i > 0 {
+				sb.WriteString(" ")
+			}
+			sb.WriteString(styles.CollectionBadge(c.Name))
+		}
+		sb.WriteString("\n")
+	}
 	sb.WriteString("\n")
 
 	content := doc.Content
@@ -729,6 +806,12 @@ func (m Model) renderStatusBar() string {
 				styles.HelpDescStyle.Render("  (enter to save, esc to cancel)"),
 		)
 	}
+	if m.collecting {
+		return styles.StatusBarStyle.Render(
+			styles.HelpKeyStyle.Render("Collection: ") + m.collectInput.View() +
+				styles.HelpDescStyle.Render("  (enter to save, esc to cancel)"),
+		)
+	}
 
 	var status string
 	if m.statusIsErr {
@@ -767,6 +850,7 @@ func (m Model) renderHelp() string {
 		{"y", "Copy path to clipboard"},
 		{"r", "Refresh index"},
 		{"t", "Add tag"},
+		{"c", "Add to collection"},
 		{"g/G", "Go to start/end"},
 		{"Ctrl+u/d", "Half page up/down"},
 		{"Esc", "Cancel / Clear search"},
