@@ -2,9 +2,12 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -570,4 +573,150 @@ func (d *DB) FindByTag(ctx context.Context, tag string) ([]*Document, error) {
 		docs = append(docs, doc)
 	}
 	return docs, rows.Err()
+}
+
+// generateID generates a random 16-byte hex ID.
+func generateID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// scanCollection scans a single row into a Collection.
+func (d *DB) scanCollection(row *sql.Row) (*Collection, error) {
+	var c Collection
+	var createdAt time.Time
+	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning collection: %w", err)
+	}
+	c.CreatedAt = createdAt
+	return &c, nil
+}
+
+// CreateCollection creates a new collection.
+func (d *DB) CreateCollection(ctx context.Context, c *Collection) error {
+	if c.ID == "" {
+		c.ID = generateID()
+	}
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now().UTC()
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO collections (id, name, description, query, created_at) VALUES (?, ?, ?, ?, ?)`,
+		c.ID, c.Name, c.Description, c.Query, c.CreatedAt.UTC(),
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return ErrCollectionExists
+		}
+		return fmt.Errorf("creating collection: %w", err)
+	}
+	return nil
+}
+
+// GetCollection retrieves a collection by ID.
+func (d *DB) GetCollection(ctx context.Context, id string) (*Collection, error) {
+	row := d.db.QueryRowContext(ctx,
+		`SELECT id, name, description, query, created_at FROM collections WHERE id = ?`, id,
+	)
+	return d.scanCollection(row)
+}
+
+// GetCollectionByName retrieves a collection by name.
+func (d *DB) GetCollectionByName(ctx context.Context, name string) (*Collection, error) {
+	row := d.db.QueryRowContext(ctx,
+		`SELECT id, name, description, query, created_at FROM collections WHERE name = ?`, name,
+	)
+	return d.scanCollection(row)
+}
+
+// ListCollections returns all collections ordered by name.
+func (d *DB) ListCollections(ctx context.Context) ([]*Collection, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, name, description, query, created_at FROM collections ORDER BY name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing collections: %w", err)
+	}
+	defer rows.Close()
+
+	var collections []*Collection
+	for rows.Next() {
+		var c Collection
+		var createdAt time.Time
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt); err != nil {
+			return nil, fmt.Errorf("scanning collection: %w", err)
+		}
+		c.CreatedAt = createdAt
+		collections = append(collections, &c)
+	}
+	return collections, rows.Err()
+}
+
+// RenameCollection renames a collection.
+func (d *DB) RenameCollection(ctx context.Context, id, newName string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE collections SET name = ? WHERE id = ?`, newName, id,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return ErrCollectionExists
+		}
+		return fmt.Errorf("renaming collection: %w", err)
+	}
+	return nil
+}
+
+// UpdateCollectionDescription updates a collection's description.
+func (d *DB) UpdateCollectionDescription(ctx context.Context, id, desc string) error {
+	result, err := d.db.ExecContext(ctx,
+		`UPDATE collections SET description = ? WHERE id = ?`, desc, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating collection description: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteCollection deletes a collection by ID.
+func (d *DB) DeleteCollection(ctx context.Context, id string) error {
+	result, err := d.db.ExecContext(ctx, "DELETE FROM collections WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("deleting collection: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteCollectionByName deletes a collection by name.
+func (d *DB) DeleteCollectionByName(ctx context.Context, name string) error {
+	result, err := d.db.ExecContext(ctx, "DELETE FROM collections WHERE name = ?", name)
+	if err != nil {
+		return fmt.Errorf("deleting collection: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
