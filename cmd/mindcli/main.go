@@ -727,9 +727,11 @@ func runAsk(question string) error {
 		contexts = append(contexts, content)
 	}
 
-	// Generate answer via Ollama.
+	// Generate answer via Ollama with streaming.
 	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
-	answer, err := llm.GenerateAnswer(ctx, question, contexts)
+	err = llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+		fmt.Print(token)
+	})
 	if err != nil {
 		// If LLM fails, show search results instead.
 		fmt.Printf("(Ollama unavailable, showing top results for: %s)\n\n", parsed.SearchTerms)
@@ -742,8 +744,7 @@ func runAsk(question string) error {
 		return nil
 	}
 
-	fmt.Println(answer)
-	fmt.Printf("\nSources:\n")
+	fmt.Printf("\n\nSources:\n")
 	for i, doc := range docs {
 		if i >= 5 {
 			break
