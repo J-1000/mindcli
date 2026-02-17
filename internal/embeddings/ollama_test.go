@@ -108,3 +108,32 @@ func TestEmbedBatchEmpty(t *testing.T) {
 		t.Errorf("expected nil results for empty slice, got %v", results)
 	}
 }
+
+func TestEmbedBatchSuccess(t *testing.T) {
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		return http.StatusOK, ollamaEmbedResponse{
+			Model: req.Model,
+			Embeddings: [][]float32{
+				{1.0, 2.0},
+				{3.0, 4.0},
+				{5.0, 6.0},
+			},
+		}
+	})
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	results, err := e.EmbedBatch(context.Background(), []string{"a", "b", "c"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if results[0][0] != 1.0 || results[1][0] != 3.0 || results[2][0] != 5.0 {
+		t.Errorf("unexpected embedding values: %v", results)
+	}
+	if d := e.Dimensions(); d != 2 {
+		t.Errorf("expected Dimensions() == 2, got %d", d)
+	}
+}
