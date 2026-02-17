@@ -269,3 +269,44 @@ func TestEmbedBatchRequestFormat(t *testing.T) {
 		t.Errorf("unexpected input values: %v", inputs)
 	}
 }
+
+func TestDimensionsCaching(t *testing.T) {
+	callCount := 0
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		callCount++
+		dim := 4
+		if callCount == 2 {
+			dim = 8 // Different dimension on second call.
+		}
+		emb := make([]float32, dim)
+		return http.StatusOK, ollamaEmbedResponse{
+			Model:      req.Model,
+			Embeddings: [][]float32{emb},
+		}
+	})
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+
+	if d := e.Dimensions(); d != 0 {
+		t.Errorf("expected 0 before first call, got %d", d)
+	}
+
+	// First call should cache dimensions as 4.
+	_, err := e.Embed(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Dimensions(); d != 4 {
+		t.Errorf("expected 4 after first call, got %d", d)
+	}
+
+	// Second call returns dim 8, but cached value should stay 4.
+	_, err = e.Embed(context.Background(), "world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Dimensions(); d != 4 {
+		t.Errorf("expected dimensions to remain 4 (cached), got %d", d)
+	}
+}
