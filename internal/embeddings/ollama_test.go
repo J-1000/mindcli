@@ -2,8 +2,41 @@ package embeddings
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
+
+// fakeOllamaServer creates an httptest server that mimics the Ollama /api/embed endpoint.
+// The handler function receives the decoded request and returns the response to send.
+func fakeOllamaServer(t *testing.T, handler func(req ollamaEmbedRequest) (int, any)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/embed" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req ollamaEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		status, resp := handler(req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
 
 func TestNewOllamaEmbedder(t *testing.T) {
 	e := NewOllamaEmbedder("http://localhost:11434", "nomic-embed-text")
@@ -26,6 +59,34 @@ func TestDimensionsInitiallyZero(t *testing.T) {
 	e := NewOllamaEmbedder("http://localhost:11434", "test-model")
 	if d := e.Dimensions(); d != 0 {
 		t.Errorf("expected Dimensions() == 0 before any embedding, got %d", d)
+	}
+}
+
+func TestEmbedSuccess(t *testing.T) {
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		if req.Model != "test-model" {
+			t.Errorf("expected model test-model, got %s", req.Model)
+		}
+		return http.StatusOK, ollamaEmbedResponse{
+			Model:      req.Model,
+			Embeddings: [][]float32{{0.1, 0.2, 0.3}},
+		}
+	})
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	emb, err := e.Embed(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(emb) != 3 {
+		t.Fatalf("expected 3 dimensions, got %d", len(emb))
+	}
+	if emb[0] != 0.1 || emb[1] != 0.2 || emb[2] != 0.3 {
+		t.Errorf("unexpected embedding values: %v", emb)
+	}
+	if d := e.Dimensions(); d != 3 {
+		t.Errorf("expected Dimensions() == 3 after embed, got %d", d)
 	}
 }
 
