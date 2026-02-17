@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -192,5 +193,16 @@ func TestEmbedBatchCountMismatch(t *testing.T) {
 	expected := "expected 3 embeddings, got 1"
 	if err.Error() != expected {
 		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
+}
+
+func TestEmbedBatchConnectionRefused(t *testing.T) {
+	e := NewOllamaEmbedder("http://127.0.0.1:1", "test-model")
+	_, err := e.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ollama request failed") {
+		t.Errorf("expected connection error message, got: %q", err.Error())
 	}
 }
