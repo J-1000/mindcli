@@ -328,3 +328,6 @@ func TestEmbedBatchInvalidJSON(t *testing.T) {
 		t.Errorf("expected parsing error, got: %q", err.Error())
 	}
 }
+
+// Compile-time check that OllamaEmbedder implements Embedder.
+var _ Embedder = (*OllamaEmbedder)(nil)
