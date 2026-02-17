@@ -173,3 +173,24 @@ func TestEmbedBatchHTTPStatusError(t *testing.T) {
 		t.Errorf("unexpected error: %q", got)
 	}
 }
+
+func TestEmbedBatchCountMismatch(t *testing.T) {
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		// Return 1 embedding when 3 were requested.
+		return http.StatusOK, ollamaEmbedResponse{
+			Model:      req.Model,
+			Embeddings: [][]float32{{1.0, 2.0}},
+		}
+	})
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	_, err := e.EmbedBatch(context.Background(), []string{"a", "b", "c"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	expected := "expected 3 embeddings, got 1"
+	if err.Error() != expected {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
+}
