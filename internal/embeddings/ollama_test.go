@@ -1,6 +1,7 @@
 package embeddings
 
 import (
+	"context"
 	"testing"
 )
 
@@ -25,5 +26,24 @@ func TestDimensionsInitiallyZero(t *testing.T) {
 	e := NewOllamaEmbedder("http://localhost:11434", "test-model")
 	if d := e.Dimensions(); d != 0 {
 		t.Errorf("expected Dimensions() == 0 before any embedding, got %d", d)
+	}
+}
+
+func TestEmbedBatchEmpty(t *testing.T) {
+	e := NewOllamaEmbedder("http://localhost:11434", "test-model")
+	results, err := e.EmbedBatch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results for empty input, got %v", results)
+	}
+
+	results, err = e.EmbedBatch(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results for empty slice, got %v", results)
 	}
 }
