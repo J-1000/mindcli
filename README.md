@@ -29,7 +29,7 @@ cd mindcli
 make build
 ```
 
-**Requirements:** Go 1.21+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
+**Requirements:** Go 1.25+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
 
 ## Quick Start
 
