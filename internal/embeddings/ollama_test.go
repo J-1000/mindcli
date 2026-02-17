@@ -156,3 +156,20 @@ func TestEmbedBatchOllamaError(t *testing.T) {
 		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
 }
+
+func TestEmbedBatchHTTPStatusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal server error"))
+	}))
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	_, err := e.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := err.Error(); got != "ollama returned status 500: internal server error" {
+		t.Errorf("unexpected error: %q", got)
+	}
+}
