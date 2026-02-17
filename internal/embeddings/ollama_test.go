@@ -206,3 +206,25 @@ func TestEmbedBatchConnectionRefused(t *testing.T) {
 		t.Errorf("expected connection error message, got: %q", err.Error())
 	}
 }
+
+func TestEmbedBatchCancelledContext(t *testing.T) {
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		return http.StatusOK, ollamaEmbedResponse{
+			Model:      req.Model,
+			Embeddings: [][]float32{{1.0}},
+		}
+	})
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	_, err := e.EmbedBatch(ctx, []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "canceled") {
+		t.Errorf("expected context cancelled error, got: %q", err.Error())
+	}
+}
