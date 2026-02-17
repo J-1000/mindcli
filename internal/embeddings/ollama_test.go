@@ -228,3 +228,44 @@ func TestEmbedBatchCancelledContext(t *testing.T) {
 		t.Errorf("expected context cancelled error, got: %q", err.Error())
 	}
 }
+
+func TestEmbedBatchRequestFormat(t *testing.T) {
+	var capturedReq ollamaEmbedRequest
+	var capturedContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedContentType = r.Header.Get("Content-Type")
+		json.NewDecoder(r.Body).Decode(&capturedReq)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaEmbedResponse{
+			Model:      "my-model",
+			Embeddings: [][]float32{{1.0}, {2.0}},
+		})
+	}))
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "my-model")
+	_, err := e.EmbedBatch(context.Background(), []string{"text1", "text2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedContentType != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", capturedContentType)
+	}
+	if capturedReq.Model != "my-model" {
+		t.Errorf("expected model my-model in request, got %q", capturedReq.Model)
+	}
+	// Input is deserialized as []any from JSON.
+	inputs, ok := capturedReq.Input.([]any)
+	if !ok {
+		t.Fatalf("expected input to be []any, got %T", capturedReq.Input)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("expected 2 inputs, got %d", len(inputs))
+	}
+	if inputs[0] != "text1" || inputs[1] != "text2" {
+		t.Errorf("unexpected input values: %v", inputs)
+	}
+}
