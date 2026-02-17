@@ -310,3 +310,21 @@ func TestDimensionsCaching(t *testing.T) {
 		t.Errorf("expected dimensions to remain 4 (cached), got %d", d)
 	}
 }
+
+func TestEmbedBatchInvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json{{{"))
+	}))
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "test-model")
+	_, err := e.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing response") {
+		t.Errorf("expected parsing error, got: %q", err.Error())
+	}
+}
