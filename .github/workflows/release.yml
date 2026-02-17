@@ -27,3 +27,56 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-linux:
+    needs: release-darwin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev gcc-aarch64-linux-gnu
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.6"
+          cache: true
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "ldflags=-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.date=$DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Build linux/amd64
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -ldflags "${{ steps.meta.outputs.ldflags }}" -o mindcli ./cmd/mindcli
+          tar czf "mindcli_${{ steps.meta.outputs.version }}_linux_amd64.tar.gz" mindcli
+          rm mindcli
+
+      - name: Build linux/arm64
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
+            go build -ldflags "${{ steps.meta.outputs.ldflags }}" -o mindcli ./cmd/mindcli
+          tar czf "mindcli_${{ steps.meta.outputs.version }}_linux_arm64.tar.gz" mindcli
+          rm mindcli
+
+      - name: Generate checksums
+        run: sha256sum mindcli_*.tar.gz > checksums_linux.txt
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mindcli_*.tar.gz
+            checksums_linux.txt
