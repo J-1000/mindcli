@@ -137,3 +137,22 @@ func TestEmbedBatchSuccess(t *testing.T) {
 		t.Errorf("expected Dimensions() == 2, got %d", d)
 	}
 }
+
+func TestEmbedBatchOllamaError(t *testing.T) {
+	srv := fakeOllamaServer(t, func(req ollamaEmbedRequest) (int, any) {
+		return http.StatusBadRequest, ollamaErrorResponse{
+			Error: "model 'nonexistent' not found",
+		}
+	})
+	defer srv.Close()
+
+	e := NewOllamaEmbedder(srv.URL, "nonexistent")
+	_, err := e.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	expected := "ollama error: model 'nonexistent' not found"
+	if err.Error() != expected {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
+}
