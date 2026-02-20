@@ -201,7 +201,7 @@ func runIndex(pathsOverride string, watch bool) error {
 
 	// Override paths if provided
 	if pathsOverride != "" {
-		cfg.Sources.Markdown.Paths = filepath.SplitList(pathsOverride)
+		cfg.Sources.Markdown.Paths = parsePathsOverride(pathsOverride)
 	}
 
 	// Ensure data directory exists
@@ -292,6 +292,19 @@ func runIndex(pathsOverride string, watch bool) error {
 	}
 
 	return nil
+}
+
+func parsePathsOverride(pathsOverride string) []string {
+	var paths []string
+	for _, part := range strings.Split(pathsOverride, ",") {
+		for _, p := range filepath.SplitList(strings.TrimSpace(part)) {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
 }
 
 func runWatch() error {
