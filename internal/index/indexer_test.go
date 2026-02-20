@@ -279,6 +279,143 @@ func TestIndexer_Cancellation(t *testing.T) {
 	// Note: Cancellation may or may not return an error depending on timing
 }
 
+func TestIndexer_RemoveFileDeletesVectors(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
+	if err != nil {
+		t.Fatalf("creating search index: %v", err)
+	}
+	defer searchIdx.Close()
+
+	vectors, err := storage.NewVectorStore(filepath.Join(tmpDir, "vectors.graph"))
+	if err != nil {
+		t.Fatalf("creating vector store: %v", err)
+	}
+	defer vectors.Close()
+
+	cfg := &config.Config{Indexing: config.IndexingConfig{Workers: 1}}
+	indexer := NewIndexer(db, searchIdx, vectors, nil, cfg)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	doc := &storage.Document{
+		ID:          "doc-remove",
+		Source:      storage.SourceMarkdown,
+		Path:        filepath.Join(tmpDir, "note.md"),
+		Title:       "Note",
+		Content:     "content",
+		ContentHash: "hash-remove",
+		IndexedAt:   now,
+		ModifiedAt:  now,
+	}
+
+	if err := db.UpsertDocument(ctx, doc); err != nil {
+		t.Fatalf("upserting document: %v", err)
+	}
+	if err := searchIdx.Index(ctx, doc); err != nil {
+		t.Fatalf("indexing document: %v", err)
+	}
+	chunk := &storage.Chunk{
+		ID:         "doc-remove:0",
+		DocumentID: doc.ID,
+		Content:    "content",
+		StartPos:   0,
+		EndPos:     7,
+	}
+	if err := db.InsertChunk(ctx, chunk); err != nil {
+		t.Fatalf("inserting chunk: %v", err)
+	}
+	vectors.Add(chunk.ID, []float32{1, 0})
+	if got := vectors.Len(); got != 1 {
+		t.Fatalf("vector count before remove = %d, want 1", got)
+	}
+
+	if err := indexer.RemoveFile(ctx, doc.Path); err != nil {
+		t.Fatalf("RemoveFile: %v", err)
+	}
+
+	if got := vectors.Len(); got != 0 {
+		t.Fatalf("vector count after remove = %d, want 0", got)
+	}
+}
+
+func TestIndexer_EmbedDocumentRemovesStaleVectors(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
+	if err != nil {
+		t.Fatalf("creating search index: %v", err)
+	}
+	defer searchIdx.Close()
+
+	vectors, err := storage.NewVectorStore(filepath.Join(tmpDir, "vectors.graph"))
+	if err != nil {
+		t.Fatalf("creating vector store: %v", err)
+	}
+	defer vectors.Close()
+
+	cfg := &config.Config{Indexing: config.IndexingConfig{Workers: 1}}
+	embedder := &testEmbedder{}
+	indexer := NewIndexer(db, searchIdx, vectors, embedder, cfg)
+
+	ctx := context.Background()
+	doc := &storage.Document{
+		ID:      "doc-embed",
+		Source:  storage.SourceMarkdown,
+		Path:    filepath.Join(tmpDir, "embed.md"),
+		Title:   "Embed",
+		Content: "fresh content",
+	}
+	if err := db.UpsertDocument(ctx, &storage.Document{
+		ID:          doc.ID,
+		Source:      doc.Source,
+		Path:        doc.Path,
+		Title:       doc.Title,
+		Content:     "old content",
+		ContentHash: "hash-old",
+		IndexedAt:   time.Now().UTC(),
+		ModifiedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("upserting document: %v", err)
+	}
+
+	staleChunk := &storage.Chunk{
+		ID:         "doc-embed:stale",
+		DocumentID: doc.ID,
+		Content:    "stale content",
+		StartPos:   0,
+		EndPos:     12,
+	}
+	if err := db.InsertChunk(ctx, staleChunk); err != nil {
+		t.Fatalf("inserting stale chunk: %v", err)
+	}
+	vectors.Add(staleChunk.ID, []float32{9, 9})
+	if vectors.Len() != 1 {
+		t.Fatalf("expected 1 stale vector before embed, got %d", vectors.Len())
+	}
+
+	indexer.embedDocument(ctx, doc)
+
+	chunks, err := db.GetChunksByDocument(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("loading chunks: %v", err)
+	}
+	if len(chunks) != vectors.Len() {
+		t.Fatalf("chunks=%d vectors=%d, expected equality after re-embed", len(chunks), vectors.Len())
+	}
+}
+
 // testProgressReporter tracks progress calls for testing.
 type testProgressReporter struct {
 	mu        sync.Mutex
@@ -315,3 +452,19 @@ func (p *testProgressReporter) OnError(source string, path string, err error) {
 	defer p.mu.Unlock()
 	p.errors = append(p.errors, err)
 }
+
+type testEmbedder struct{}
+
+func (e *testEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	return []float32{float32(len(text)), 1}, nil
+}
+
+func (e *testEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i] = []float32{float32(len(text)), float32(i + 1)}
+	}
+	return out, nil
+}
+
+func (e *testEmbedder) Dimensions() int { return 2 }
