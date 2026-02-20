@@ -335,7 +335,39 @@ func runWatch() error {
 	}
 	defer searchIndex.Close()
 
-	indexer := index.NewIndexer(db, searchIndex, nil, nil, cfg)
+	// Set up vector store and embedder (optional - fails gracefully).
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	vectors, err := storage.NewVectorStore(vectorPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
+		vectors = nil
+	}
+	if vectors != nil {
+		defer vectors.Close()
+	}
+
+	var embedder embeddings.Embedder
+	if cfg.Embeddings.Provider == "ollama" {
+		ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
+		cachePath := filepath.Join(dataDir, "embeddings.db")
+		cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
+			embedder = ollamaEmb
+		} else {
+			defer cached.Close()
+			embedder = cached
+		}
+
+		// Test connectivity by checking if Ollama is reachable.
+		ctx := context.Background()
+		if _, err := ollamaEmb.Embed(ctx, "test"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
+			embedder = nil
+		}
+	}
+
+	indexer := index.NewIndexer(db, searchIndex, vectors, embedder, cfg)
 	return startWatching(indexer, cfg)
 }
 
