@@ -39,8 +39,11 @@ func (v *VectorStore) Add(key string, vector []float32) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	v.normalizeEmptyGraph()
+
 	// Delete existing entry if present (HNSW doesn't handle duplicate keys).
 	v.graph.Delete(key)
+	v.normalizeEmptyGraph()
 	v.graph.Add(hnsw.MakeNode(key, vector))
 }
 
@@ -53,11 +56,14 @@ func (v *VectorStore) AddBatch(keys []string, vectors [][]float32) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	v.normalizeEmptyGraph()
+
 	nodes := make([]hnsw.Node[string], len(keys))
 	for i := range keys {
 		v.graph.Delete(keys[i])
 		nodes[i] = hnsw.MakeNode(keys[i], vectors[i])
 	}
+	v.normalizeEmptyGraph()
 	v.graph.Add(nodes...)
 }
 
@@ -92,6 +98,7 @@ func (v *VectorStore) Delete(key string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.graph.Delete(key)
+	v.normalizeEmptyGraph()
 }
 
 // DeleteByPrefix removes all vectors whose keys start with the given prefix.
@@ -103,6 +110,16 @@ func (v *VectorStore) DeleteByPrefix(prefix string) {
 	// We need to collect keys first since we can't modify during iteration.
 	// The HNSW graph doesn't expose iteration, so we track keys externally
 	// or just use Lookup. For now, we rely on the caller knowing the keys.
+}
+
+func (v *VectorStore) normalizeEmptyGraph() {
+	// The underlying HNSW implementation can retain empty layers after deletes.
+	// Recreate the graph when it's logically empty to keep future Add/AddBatch safe.
+	if v.graph.Len() == 0 {
+		g := hnsw.NewGraph[string]()
+		g.Distance = hnsw.CosineDistance
+		v.graph.Graph = g
+	}
 }
 
 // Len returns the number of vectors in the store.
