@@ -227,6 +227,33 @@ func TestAskFallbackWithoutOllama(t *testing.T) {
 	}
 }
 
+func TestParsePathsOverrideCommaSeparated(t *testing.T) {
+	got := parsePathsOverride(" ~/notes ,~/docs,, /tmp/x ")
+	want := []string{"~/notes", "~/docs", "/tmp/x"}
+	if len(got) != len(want) {
+		t.Fatalf("len(got)=%d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d]=%q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParsePathsOverrideSupportsPathListSeparators(t *testing.T) {
+	input := "a" + string(filepath.ListSeparator) + "b"
+	got := parsePathsOverride(input)
+	want := []string{"a", "b"}
+	if len(got) != len(want) {
+		t.Fatalf("len(got)=%d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d]=%q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
