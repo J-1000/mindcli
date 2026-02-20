@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jankowtf/mindcli/internal/config"
+	"github.com/jankowtf/mindcli/internal/index/sources"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
@@ -416,6 +418,96 @@ func TestIndexer_EmbedDocumentRemovesStaleVectors(t *testing.T) {
 	}
 }
 
+func TestIndexer_IndexFile_UsesStatPathWithoutScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "note.md")
+	if err := os.WriteFile(filePath, []byte("# note"), 0o644); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
+	if err != nil {
+		t.Fatalf("creating search index: %v", err)
+	}
+	defer searchIdx.Close()
+
+	src := &mockSource{
+		name:      storage.SourceMarkdown,
+		matchPath: filePath,
+	}
+
+	idx := &Indexer{
+		db:      db,
+		search:  searchIdx,
+		sources: []sources.Source{src},
+	}
+
+	if err := idx.IndexFile(context.Background(), filePath); err != nil {
+		t.Fatalf("IndexFile: %v", err)
+	}
+
+	if src.scanCalls != 0 {
+		t.Fatalf("scanCalls = %d, want 0", src.scanCalls)
+	}
+	if src.parseCalls != 1 {
+		t.Fatalf("parseCalls = %d, want 1", src.parseCalls)
+	}
+	if src.lastParsed.Path != filePath {
+		t.Fatalf("parsed path = %q, want %q", src.lastParsed.Path, filePath)
+	}
+}
+
+func TestIndexer_IndexFile_FallsBackToSourceScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	virtualPath := "clipboard:test"
+
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
+	if err != nil {
+		t.Fatalf("creating search index: %v", err)
+	}
+	defer searchIdx.Close()
+
+	src := &mockSource{
+		name:      storage.SourceClipboard,
+		matchPath: virtualPath,
+		scanFiles: []sources.FileInfo{
+			{Path: virtualPath, ModifiedAt: time.Now().Unix(), Size: 42},
+		},
+	}
+
+	idx := &Indexer{
+		db:      db,
+		search:  searchIdx,
+		sources: []sources.Source{src},
+	}
+
+	if err := idx.IndexFile(context.Background(), virtualPath); err != nil {
+		t.Fatalf("IndexFile: %v", err)
+	}
+
+	if src.scanCalls != 1 {
+		t.Fatalf("scanCalls = %d, want 1", src.scanCalls)
+	}
+	if src.parseCalls != 1 {
+		t.Fatalf("parseCalls = %d, want 1", src.parseCalls)
+	}
+	if src.lastParsed.Path != virtualPath {
+		t.Fatalf("parsed path = %q, want %q", src.lastParsed.Path, virtualPath)
+	}
+}
+
 // testProgressReporter tracks progress calls for testing.
 type testProgressReporter struct {
 	mu        sync.Mutex
@@ -468,3 +560,52 @@ func (e *testEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 }
 
 func (e *testEmbedder) Dimensions() int { return 2 }
+
+type mockSource struct {
+	name      storage.Source
+	matchPath string
+	scanFiles []sources.FileInfo
+
+	scanCalls  int
+	parseCalls int
+	lastParsed sources.FileInfo
+}
+
+func (m *mockSource) Name() storage.Source { return m.name }
+
+func (m *mockSource) Scan(ctx context.Context) (<-chan sources.FileInfo, <-chan error) {
+	m.scanCalls++
+	files := make(chan sources.FileInfo, len(m.scanFiles))
+	errs := make(chan error, 1)
+	for _, f := range m.scanFiles {
+		files <- f
+	}
+	close(files)
+	close(errs)
+	return files, errs
+}
+
+func (m *mockSource) MatchesPath(path string) bool {
+	return path == m.matchPath
+}
+
+func (m *mockSource) Parse(ctx context.Context, file sources.FileInfo) (*storage.Document, error) {
+	m.parseCalls++
+	m.lastParsed = file
+	if file.Path == "" {
+		return nil, fmt.Errorf("empty path")
+	}
+
+	now := time.Now().UTC()
+	return &storage.Document{
+		ID:          "doc:" + file.Path,
+		Source:      m.name,
+		Path:        file.Path,
+		Title:       file.Path,
+		Content:     "content",
+		Preview:     "content",
+		ContentHash: "hash:" + file.Path,
+		IndexedAt:   now,
+		ModifiedAt:  now,
+	}, nil
+}

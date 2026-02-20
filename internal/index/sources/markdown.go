@@ -57,6 +57,11 @@ func (m *MarkdownSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan erro
 	return m.scanner.Scan(ctx)
 }
 
+// MatchesPath reports whether this source is configured to handle the path.
+func (m *MarkdownSource) MatchesPath(path string) bool {
+	return m.scanner.MatchesPath(path)
+}
+
 // Parse reads and parses a markdown file into a Document.
 func (m *MarkdownSource) Parse(ctx context.Context, file FileInfo) (*storage.Document, error) {
 	content, err := os.ReadFile(file.Path)

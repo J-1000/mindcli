@@ -40,6 +40,11 @@ func (p *PDFSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) {
 	return p.scanner.Scan(ctx)
 }
 
+// MatchesPath reports whether this source is configured to handle the path.
+func (p *PDFSource) MatchesPath(path string) bool {
+	return p.scanner.MatchesPath(path)
+}
+
 // Parse reads a PDF file and returns the parsed document.
 func (p *PDFSource) Parse(ctx context.Context, file FileInfo) (*storage.Document, error) {
 	content, err := extractPDFText(file.Path)

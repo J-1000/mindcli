@@ -37,6 +37,11 @@ func (c *ClipboardSource) Name() storage.Source {
 	return storage.SourceClipboard
 }
 
+// MatchesPath reports whether this source is configured to handle the path.
+func (c *ClipboardSource) MatchesPath(path string) bool {
+	return strings.HasPrefix(path, "clipboard:")
+}
+
 // Scan returns the current clipboard content as a single file-like entry.
 // For clipboard, each unique clip is treated as a "file".
 func (c *ClipboardSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) {

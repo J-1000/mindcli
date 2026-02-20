@@ -15,6 +15,9 @@ type Source interface {
 	// Scan walks the configured paths and returns files to index.
 	Scan(ctx context.Context) (<-chan FileInfo, <-chan error)
 
+	// MatchesPath reports whether this source is configured to handle the given path.
+	MatchesPath(path string) bool
+
 	// Parse reads a file and returns the parsed document.
 	Parse(ctx context.Context, file FileInfo) (*storage.Document, error)
 }

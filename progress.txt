@@ -200,5 +200,5 @@
 
 ## Remaining Findings (from review on 2026-02-20)
 
-- [ ] Watch mode does not update semantic index: `runWatch` initializes indexer with `vectors=nil` and `embedder=nil`, so file-change reindexing only updates BM25/SQLite. File: `cmd/mindcli/main.go`.
-- [ ] `IndexFile` is O(total files) per change event: it rescans every source and linearly searches for the matching path before indexing, which can be slow on large trees. File: `internal/index/indexer.go`.
+- [x] Watch mode does not update semantic index: `runWatch` initializes indexer with `vectors=nil` and `embedder=nil`, so file-change reindexing only updates BM25/SQLite. File: `cmd/mindcli/main.go`.
+- [x] `IndexFile` is O(total files) per change event: it rescans every source and linearly searches for the matching path before indexing, which can be slow on large trees. File: `internal/index/indexer.go`.

@@ -117,6 +117,22 @@ func (e *EmailSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) 
 	return files, errs
 }
 
+// MatchesPath reports whether this source is configured to handle the path.
+func (e *EmailSource) MatchesPath(path string) bool {
+	filePath := normalizePath(path)
+	if !e.isEmailFile(filePath) {
+		return false
+	}
+
+	for _, p := range e.paths {
+		if pathWithin(filePath, normalizePath(expandPath(p))) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Parse reads an email file and returns the parsed document.
 // For mbox files, the first message is used as the document.
 func (e *EmailSource) Parse(ctx context.Context, file FileInfo) (*storage.Document, error) {

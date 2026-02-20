@@ -35,6 +35,17 @@ func (b *BrowserSource) Name() storage.Source {
 	return storage.SourceBrowser
 }
 
+// MatchesPath reports whether this source is configured to handle the path.
+func (b *BrowserSource) MatchesPath(path string) bool {
+	target := normalizePath(path)
+	for _, browser := range b.browsers {
+		if normalizePath(browserDBPath(browser)) == target {
+			return true
+		}
+	}
+	return false
+}
+
 // historyEntry holds a single browser history entry.
 type historyEntry struct {
 	URL        string

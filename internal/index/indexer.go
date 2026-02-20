@@ -4,6 +4,7 @@ package index
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -252,34 +253,80 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 
 // IndexFile indexes a single file.
 func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
-	// Find the appropriate source
+	// Find the appropriate source based on source configuration.
 	for _, src := range idx.sources {
-		files, _ := src.Scan(ctx)
-		for file := range files {
-			if file.Path == path {
-				doc, err := src.Parse(ctx, file)
-				if err != nil {
-					return fmt.Errorf("parsing: %w", err)
-				}
+		if !src.MatchesPath(path) {
+			continue
+		}
 
-				if err := idx.db.UpsertDocument(ctx, doc); err != nil {
-					return fmt.Errorf("storing: %w", err)
-				}
-
-				if err := idx.search.Index(ctx, doc); err != nil {
-					return fmt.Errorf("indexing: %w", err)
-				}
-
-				if idx.vectors != nil && idx.embedder != nil {
-					idx.embedDocument(ctx, doc)
-				}
-
-				return nil
+		fileInfo, err := statFileInfo(path)
+		if err != nil {
+			// Fall back to a source-local scan for non-filesystem paths.
+			fileInfo, err = findFileInfoByPath(ctx, src, path)
+			if err != nil {
+				return fmt.Errorf("resolving file info: %w", err)
 			}
 		}
+
+		doc, err := src.Parse(ctx, fileInfo)
+		if err != nil {
+			return fmt.Errorf("parsing: %w", err)
+		}
+
+		if err := idx.db.UpsertDocument(ctx, doc); err != nil {
+			return fmt.Errorf("storing: %w", err)
+		}
+
+		if err := idx.search.Index(ctx, doc); err != nil {
+			return fmt.Errorf("indexing: %w", err)
+		}
+
+		if idx.vectors != nil && idx.embedder != nil {
+			idx.embedDocument(ctx, doc)
+		}
+
+		return nil
 	}
 
 	return fmt.Errorf("no source found for file: %s", path)
+}
+
+func statFileInfo(path string) (sources.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return sources.FileInfo{}, err
+	}
+	if info.IsDir() {
+		return sources.FileInfo{}, fmt.Errorf("path is a directory: %s", path)
+	}
+
+	return sources.FileInfo{
+		Path:       path,
+		ModifiedAt: info.ModTime().Unix(),
+		Size:       info.Size(),
+	}, nil
+}
+
+func findFileInfoByPath(ctx context.Context, src sources.Source, path string) (sources.FileInfo, error) {
+	files, errs := src.Scan(ctx)
+	for file := range files {
+		if file.Path == path {
+			for range errs {
+			}
+			return file, nil
+		}
+	}
+
+	var scanErr error
+	for err := range errs {
+		if scanErr == nil {
+			scanErr = err
+		}
+	}
+	if scanErr != nil {
+		return sources.FileInfo{}, scanErr
+	}
+	return sources.FileInfo{}, fmt.Errorf("file not found in source scan: %s", path)
 }
 
 // RemoveFile removes a file from the index.

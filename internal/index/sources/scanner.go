@@ -142,6 +142,30 @@ func (s *Scanner) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) {
 	return files, errs
 }
 
+// MatchesPath reports whether a path is included by this scanner's config.
+func (s *Scanner) MatchesPath(path string) bool {
+	filePath := normalizePath(path)
+	if filePath == "" {
+		return false
+	}
+
+	if !s.matchesExtension(filePath) {
+		return false
+	}
+
+	if s.shouldIgnore(filePath, filepath.Base(filePath)) {
+		return false
+	}
+
+	for _, p := range s.config.Paths {
+		if pathWithin(filePath, normalizePath(expandPath(p))) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (s *Scanner) matchesExtension(path string) bool {
 	if len(s.extMap) == 0 {
 		return true // No filter means all files
@@ -166,6 +190,27 @@ func (s *Scanner) shouldIgnore(path, name string) bool {
 		}
 	}
 	return false
+}
+
+func normalizePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return path
+}
+
+func pathWithin(path, base string) bool {
+	if path == "" || base == "" {
+		return false
+	}
+	if path == base {
+		return true
+	}
+	return strings.HasPrefix(path, base+string(filepath.Separator))
 }
 
 // expandPath expands ~ to home directory.
