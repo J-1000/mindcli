@@ -290,6 +290,11 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 		return err
 	}
 
+	// Remove semantic vectors for this document's chunks.
+	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil && idx.progress != nil {
+		idx.progress.OnError(string(doc.Source), doc.Path, fmt.Errorf("removing vectors: %w", err))
+	}
+
 	// Remove from search index
 	if err := idx.search.Delete(ctx, doc.ID); err != nil {
 		return fmt.Errorf("removing from search: %w", err)
@@ -306,6 +311,9 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 // embedDocument chunks a document, generates embeddings, and stores them.
 func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 	// Delete old chunks and vectors for this document.
+	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil && idx.progress != nil {
+		idx.progress.OnError(string(doc.Source), doc.Path, fmt.Errorf("removing vectors: %w", err))
+	}
 	idx.db.DeleteChunksByDocument(ctx, doc.ID)
 
 	// Chunk the document content.
@@ -345,6 +353,22 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 	}
 
 	idx.vectors.AddBatch(keys, embeds)
+}
+
+func (idx *Indexer) deleteDocumentVectors(ctx context.Context, docID string) error {
+	if idx.vectors == nil {
+		return nil
+	}
+
+	chunks, err := idx.db.GetChunksByDocument(ctx, docID)
+	if err != nil {
+		return err
+	}
+
+	for _, chunk := range chunks {
+		idx.vectors.Delete(chunk.ID)
+	}
+	return nil
 }
 
 // SaveVectors persists the vector store to disk. Call after indexing completes.
