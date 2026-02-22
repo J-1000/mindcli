@@ -18,6 +18,7 @@ type Config struct {
 	Search     SearchConfig     `yaml:"search"`
 	Indexing   IndexingConfig   `yaml:"indexing"`
 	Storage    StorageConfig    `yaml:"storage"`
+	Privacy    PrivacyConfig    `yaml:"privacy"`
 }
 
 // SourcesConfig configures which data sources to index.
@@ -92,6 +93,11 @@ type StorageConfig struct {
 	Path string `yaml:"path"`
 }
 
+// PrivacyConfig configures privacy controls for displaying content.
+type PrivacyConfig struct {
+	RedactPatterns []string `yaml:"redact_patterns"`
+}
+
 // Default returns a Config with sensible defaults.
 func Default() *Config {
 	homeDir, _ := os.UserHomeDir()
@@ -142,6 +148,9 @@ func Default() *Config {
 		},
 		Storage: StorageConfig{
 			Path: filepath.Join(homeDir, ".local", "share", "mindcli"),
+		},
+		Privacy: PrivacyConfig{
+			RedactPatterns: []string{},
 		},
 	}
 }
@@ -307,6 +316,9 @@ func applyEnvOverrides(cfg *Config) {
 	setBoolFromEnv("MINDCLI_SOURCES_CLIPBOARD_ENABLED", &cfg.Sources.Clipboard.Enabled)
 	setIntFromEnv("MINDCLI_SOURCES_CLIPBOARD_RETENTION_DAYS", &cfg.Sources.Clipboard.RetentionDays)
 	setBoolFromEnv("MINDCLI_SOURCES_CLIPBOARD_SKIP_PASSWORDS", &cfg.Sources.Clipboard.SkipPasswords)
+
+	// Privacy
+	setCSVFromEnv("MINDCLI_PRIVACY_REDACT_PATTERNS", &cfg.Privacy.RedactPatterns)
 }
 
 func setStringFromEnv(name string, dst *string) {

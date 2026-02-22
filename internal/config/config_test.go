@@ -276,6 +276,13 @@ func TestEmailSourceDefaults(t *testing.T) {
 	}
 }
 
+func TestPrivacyDefaults(t *testing.T) {
+	cfg := Default()
+	if len(cfg.Privacy.RedactPatterns) != 0 {
+		t.Errorf("Expected empty redact_patterns by default, got %v", cfg.Privacy.RedactPatterns)
+	}
+}
+
 func TestLLMModelYAMLRoundTrip(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mindcli-config-test-*")
 	if err != nil {
@@ -363,6 +370,7 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	t.Setenv("MINDCLI_SOURCES_MARKDOWN_PATHS", "/tmp/notes,/tmp/wiki")
 	t.Setenv("MINDCLI_SOURCES_EMAIL_IGNORE", "private,secret")
 	t.Setenv("MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW", "false")
+	t.Setenv("MINDCLI_PRIVACY_REDACT_PATTERNS", "token-[0-9]+,secret-[a-z]+")
 
 	cfg, err := Load()
 	if err != nil {
@@ -393,6 +401,9 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	}
 	if cfg.Sources.Email.MaskSensitivePreview {
 		t.Errorf("Sources.Email.MaskSensitivePreview = true, want false")
+	}
+	if got := strings.Join(cfg.Privacy.RedactPatterns, ","); got != "token-[0-9]+,secret-[a-z]+" {
+		t.Errorf("Privacy.RedactPatterns = %q, want %q", got, "token-[0-9]+,secret-[a-z]+")
 	}
 }
 
