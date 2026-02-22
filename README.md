@@ -20,6 +20,13 @@ Search across your notes, PDFs, emails, browser history, and clipboard — all f
 ## Installation
 
 ```bash
+# Homebrew (tap)
+brew tap jankowtf/homebrew-tap
+brew install mindcli
+
+# Quick install script (latest release binary)
+curl -fsSL https://raw.githubusercontent.com/jankowtf/mindcli/main/scripts/install.sh | sh
+
 # Build from source
 go install github.com/jankowtf/mindcli/cmd/mindcli@latest
 
@@ -30,6 +37,11 @@ make build
 ```
 
 **Requirements:** Go 1.25+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
+
+The install script supports:
+- `VERSION=vX.Y.Z` to pin a release
+- `INSTALL_DIR=/custom/bin` to customize install location
+- `MINDCLI_REPO=owner/repo` to install from a fork
 
 ## Quick Start
 
@@ -56,6 +68,8 @@ mindcli search "Go concurrency"              # Search and print results
 mindcli export "Go" --format json            # Export results as JSON/CSV/Markdown
 mindcli tag add ~/notes/foo.md mytag         # Add a tag to a document
 mindcli tag list                             # List all tags
+mindcli clipboard clear                      # Remove all indexed clipboard entries
+mindcli clipboard cleanup                    # Remove old indexed clipboard entries
 mindcli collection create "reading-list"     # Create a collection
 mindcli collection add reading-list ~/f.md   # Add a document to a collection
 mindcli collection list                      # List all collections
@@ -91,6 +105,15 @@ mindcli help                                 # Show help
 
 MindCLI looks for `~/.config/mindcli/config.yaml`. Run `mindcli config` to generate a default config file.
 
+Environment variables can override config values at runtime. Useful examples:
+- `MINDCLI_CONFIG_PATH` (custom config file path)
+- `MINDCLI_CONFIG_DIR` (custom config directory)
+- `MINDCLI_STORAGE_PATH`
+- `MINDCLI_INDEXING_WORKERS`, `MINDCLI_INDEXING_WATCH`
+- `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
+- `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
+- `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_PDF_PATHS`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`, `MINDCLI_SOURCES_BROWSER_BROWSERS`
+
 ```yaml
 sources:
   markdown:
@@ -109,6 +132,8 @@ sources:
     enabled: false
     paths: []
     formats: ["mbox", "maildir"]
+    ignore: []
+    mask_sensitive_preview: true
 
   browser:
     enabled: true
@@ -149,7 +174,7 @@ MindCLI uses a hybrid search approach:
 
 Natural language queries like `"what did I write about Go in my notes last week"` are parsed to filter by source and time automatically.
 
-When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results. When Ollama is not available, search gracefully falls back to BM25-only mode.
+When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results with a confidence indicator (low/medium/high) based on source coverage and query overlap. When Ollama is not available, search gracefully falls back to BM25-only mode.
 
 ## Development
 
@@ -162,6 +187,7 @@ make test-coverage   # Generate coverage report
 make lint            # Run golangci-lint
 make fmt             # Format code
 make clean           # Clean build artifacts
+./scripts/release_smoke.sh  # Verify release archive/install flow
 ```
 
 ### Project Structure
