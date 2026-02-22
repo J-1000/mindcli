@@ -1053,7 +1053,17 @@ func runAsk(question string) error {
 
 	// Generate answer via Ollama with streaming.
 	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
+	redactor := buildRedactor(cfg)
+	var answerBuilder strings.Builder
 	err = llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+		if redactor.Enabled() {
+			if done {
+				fmt.Print(redactor.Redact(answerBuilder.String()))
+				return
+			}
+			answerBuilder.WriteString(token)
+			return
+		}
 		fmt.Print(token)
 	})
 	if err != nil {
