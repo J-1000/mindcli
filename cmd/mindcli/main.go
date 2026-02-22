@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/jankowtf/mindcli/internal/config"
 	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
@@ -129,6 +131,14 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
+func buildRedactor(cfg *config.Config) privacy.Redactor {
+	redactor, errs := privacy.NewRedactor(cfg.Privacy.RedactPatterns)
+	for _, err := range errs {
+		log.Printf("Skipping redact pattern: %v", err)
+	}
+	return redactor
+}
+
 func runTUI() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -189,7 +199,8 @@ func runTUI() error {
 	}
 
 	// Create and run the TUI
-	model := tui.New(db, searchIndex, hybrid, llm)
+	redactor := buildRedactor(cfg)
+	model := tui.New(db, searchIndex, hybrid, llm, redactor)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -461,6 +472,7 @@ func runSearch(queryStr string) error {
 		return nil
 	}
 
+	redactor := buildRedactor(cfg)
 	for i, r := range results {
 		doc, err := db.GetDocument(ctx, r.ID)
 		if err != nil || doc == nil {
@@ -472,6 +484,7 @@ func runSearch(queryStr string) error {
 		} else if preview == "" {
 			preview = doc.Content
 		}
+		preview = redactor.Redact(preview)
 		fmt.Printf("%d. %s\n   %s [%s] (score: %.2f)\n   %s\n\n",
 			i+1, doc.Title, doc.Path, doc.Source, r.Score, preview)
 	}
@@ -576,6 +589,8 @@ func runExport(args []string) error {
 		return fmt.Errorf("no results found for %q", queryStr)
 	}
 
+	redactor := buildRedactor(cfg)
+
 	// Determine output writer.
 	var w io.Writer = os.Stdout
 	if *output != "" {
@@ -589,11 +604,11 @@ func runExport(args []string) error {
 
 	switch *format {
 	case "json":
-		return exportJSON(w, results)
+		return exportJSON(w, results, redactor)
 	case "csv":
-		return exportCSV(w, results)
+		return exportCSV(w, results, redactor)
 	case "markdown":
-		return exportMarkdown(w, results)
+		return exportMarkdown(w, results, redactor)
 	}
 	return nil
 }

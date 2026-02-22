@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
@@ -39,7 +40,7 @@ func TestNew(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	if model.db != db {
 		t.Error("New() did not set database")
@@ -58,7 +59,7 @@ func TestModelInit(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	cmd := model.Init()
 
 	if cmd == nil {
@@ -70,7 +71,7 @@ func TestModelUpdateWindowSize(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	msg := tea.WindowSizeMsg{Width: 120, Height: 40}
 	updated, _ := model.Update(msg)
@@ -88,7 +89,7 @@ func TestModelUpdateDocsLoaded(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	docs := []*storage.Document{
 		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown},
@@ -108,7 +109,7 @@ func TestModelUpdateSearchResults(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	docs := []*storage.Document{
 		{ID: "1", Title: "Search Result", Source: storage.SourceMarkdown},
@@ -130,7 +131,7 @@ func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	msg := errMsg{err: os.ErrNotExist}
 	updated, _ := model.Update(msg)
@@ -145,7 +146,7 @@ func TestModelToggleHelp(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	if model.showHelp {
 		t.Error("showHelp should initially be false")
@@ -173,7 +174,7 @@ func TestModelView(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.width = 120
 	model.height = 40
 
@@ -192,7 +193,7 @@ func TestModelViewLoading(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	// Don't set width/height
 
 	view := model.View()
@@ -206,7 +207,7 @@ func TestModelViewHelp(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.width = 120
 	model.height = 40
 	model.showHelp = true
@@ -222,7 +223,7 @@ func TestPanelNavigation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	// Add some results so we can navigate
 	model.results = []*storage.Document{
 		{ID: "1", Title: "Test", Source: storage.SourceMarkdown},
@@ -263,7 +264,7 @@ func TestPanelNavigationShiftTab(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.panel = PanelResults
 
 	shiftTabMsg := tea.KeyMsg{Type: tea.KeyShiftTab}
@@ -279,7 +280,7 @@ func TestResultsNavigation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.panel = PanelResults
 	model.results = []*storage.Document{
 		{ID: "1", Title: "Doc 1", Source: storage.SourceMarkdown},
@@ -339,7 +340,7 @@ func TestSearchResultsIntegration(t *testing.T) {
 		}
 	}
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	// Initialize and run the load command
 	cmd := model.Init()
@@ -401,7 +402,7 @@ func TestNewWithLLMClient(t *testing.T) {
 	defer cleanup()
 
 	llm := query.NewLLMClient("http://localhost:11434", "llama3.2")
-	model := New(db, nil, nil, llm)
+	model := New(db, nil, nil, llm, privacy.Redactor{})
 
 	if model.llm != llm {
 		t.Error("New() did not set LLM client")
@@ -412,7 +413,7 @@ func TestSearchResultsWithAnswer(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.width = 120
 	model.height = 40
 
@@ -445,7 +446,7 @@ func TestSearchResultsWithSourceFilter(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	msg := searchResultsMsg{
 		docs: []*storage.Document{
@@ -470,7 +471,7 @@ func TestSearchResultsWithTimeFilter(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 
 	msg := searchResultsMsg{
 		docs: []*storage.Document{
@@ -495,7 +496,7 @@ func TestShowAnswer(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.width = 120
 	model.height = 40
 	model.updateViewportSize()
@@ -517,7 +518,7 @@ func TestAnswerClearedOnNavigation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	model := New(db, nil, nil, nil)
+	model := New(db, nil, nil, nil, privacy.Redactor{})
 	model.width = 120
 	model.height = 40
 

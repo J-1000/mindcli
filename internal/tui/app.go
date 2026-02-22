@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/query"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
@@ -52,6 +53,7 @@ type Model struct {
 	tagInput     textinput.Model
 	collecting   bool // true when collection input mode is active
 	collectInput textinput.Model
+	redactor     privacy.Redactor
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
@@ -71,7 +73,7 @@ type Model struct {
 
 // New creates a new Model with the given database and search index.
 // The hybrid searcher and LLM client are optional; if nil, those features are skipped.
-func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient) Model {
+func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient, redactor privacy.Redactor) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -102,6 +104,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		collectInput: collectTi,
 		panel:        PanelSearch,
 		keys:         DefaultKeyMap(),
+		redactor:     redactor,
 	}
 }
 
@@ -782,6 +785,7 @@ func (m *Model) updatePreviewContent() {
 	if len(content) > 2000 {
 		content = content[:2000] + "..."
 	}
+	content = m.redactor.Redact(content)
 	sb.WriteString(styles.PreviewContentStyle.Render(content))
 
 	m.preview.SetContent(sb.String())
