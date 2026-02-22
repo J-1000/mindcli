@@ -113,6 +113,7 @@ Environment variables can override config values at runtime. Useful examples:
 - `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
 - `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
 - `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_PDF_PATHS`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`, `MINDCLI_SOURCES_BROWSER_BROWSERS`
+- `MINDCLI_PRIVACY_REDACT_PATTERNS`
 
 ```yaml
 sources:
@@ -161,6 +162,12 @@ indexing:
 
 storage:
   path: ~/.local/share/mindcli
+
+privacy:
+  redact_patterns:
+    - (?i)api[_-]?key\s*[:=]\s*[A-Za-z0-9_-]{16,}
+    - (?i)secret\s*[:=]\s*[A-Za-z0-9_-]{16,}
+    - \b[0-9]{16}\b
 ```
 
 ## How Search Works
