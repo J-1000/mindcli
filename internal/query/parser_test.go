@@ -11,10 +11,10 @@ import (
 
 func TestParseQuery(t *testing.T) {
 	tests := []struct {
-		query        string
-		wantIntent   QueryIntent
-		wantSource   string
-		wantTime     string
+		query      string
+		wantIntent QueryIntent
+		wantSource string
+		wantTime   string
 	}{
 		{
 			query:      "golang concurrency",
@@ -242,5 +242,45 @@ func TestGenerateAnswerStreamNoContexts(t *testing.T) {
 	}
 	if !gotDone {
 		t.Error("expected done=true for no-context case")
+	}
+}
+
+func TestEstimateAnswerConfidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		question string
+		contexts []string
+		want     string
+	}{
+		{
+			name:     "no contexts",
+			question: "what did I write about go concurrency",
+			contexts: nil,
+			want:     "low",
+		},
+		{
+			name:     "high overlap and multiple contexts",
+			question: "what did I write about go concurrency",
+			contexts: []string{"Go concurrency uses goroutines and channels.", "My notes: go concurrency patterns and worker pools."},
+			want:     "high",
+		},
+		{
+			name:     "limited overlap",
+			question: "what did I write about go concurrency",
+			contexts: []string{"Shopping list: milk and eggs"},
+			want:     "low",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EstimateAnswerConfidence(tt.question, tt.contexts)
+			if got.Level != tt.want {
+				t.Fatalf("Level = %q, want %q (score=%0.2f)", got.Level, tt.want, got.Score)
+			}
+			if got.Score < 0 || got.Score > 1 {
+				t.Fatalf("Score out of range: %0.4f", got.Score)
+			}
+		})
 	}
 }

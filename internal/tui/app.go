@@ -41,25 +41,25 @@ type Model struct {
 	preview     viewport.Model
 
 	// State
-	panel       Panel
-	results     []*storage.Document
-	cursor      int
-	showHelp    bool
-	statusMsg   string
-	statusIsErr bool
+	panel        Panel
+	results      []*storage.Document
+	cursor       int
+	showHelp     bool
+	statusMsg    string
+	statusIsErr  bool
 	answerText   string // LLM-generated answer for the current query
 	tagging      bool   // true when tag input mode is active
 	tagInput     textinput.Model
-	collecting   bool   // true when collection input mode is active
+	collecting   bool // true when collection input mode is active
 	collectInput textinput.Model
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
 	collectionCursor    int                   // cursor in collections list
 	prevResults         []*storage.Document   // saved results before browsing
-	streaming    bool               // true while streaming LLM answer
-	streamCh     chan streamChunkMsg // channel for streaming tokens
-	streamCancel context.CancelFunc // cancel in-flight stream
+	streaming           bool                  // true while streaming LLM answer
+	streamCh            chan streamChunkMsg   // channel for streaming tokens
+	streamCancel        context.CancelFunc    // cancel in-flight stream
 
 	// Dimensions
 	width  int
@@ -92,16 +92,16 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 	collectTi.CharLimit = 64
 
 	return Model{
-		db:          db,
-		search:      searchIndex,
-		hybrid:      hybrid,
-		llm:         llm,
-		searchInput: ti,
-		preview:     vp,
-		tagInput:    tagTi,
+		db:           db,
+		search:       searchIndex,
+		hybrid:       hybrid,
+		llm:          llm,
+		searchInput:  ti,
+		preview:      vp,
+		tagInput:     tagTi,
 		collectInput: collectTi,
-		panel:       PanelSearch,
-		keys:        DefaultKeyMap(),
+		panel:        PanelSearch,
+		keys:         DefaultKeyMap(),
 	}
 }
 
@@ -673,6 +673,11 @@ func (m *Model) showAnswer() {
 		sb.WriteString(styles.ResultSourceStyle.Render(" \u2588")) // block cursor
 	}
 	sb.WriteString("\n\n")
+	conf := query.EstimateAnswerConfidence(m.searchInput.Value(), m.answerContexts())
+	sb.WriteString(styles.ResultSourceStyle.Render(
+		fmt.Sprintf("Confidence: %s (%.2f)", strings.ToUpper(conf.Level), conf.Score),
+	))
+	sb.WriteString("\n")
 	sb.WriteString(styles.ResultSourceStyle.Render(fmt.Sprintf("Based on %d sources", min(5, len(m.results)))))
 	m.preview.SetContent(sb.String())
 }
@@ -691,18 +696,7 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	ch := make(chan streamChunkMsg, 64)
 	m.streamCh = ch
 
-	// Build contexts from top 5 docs.
-	contexts := make([]string, 0, 5)
-	for i, doc := range docs {
-		if i >= 5 {
-			break
-		}
-		content := doc.Content
-		if len(content) > 1000 {
-			content = content[:1000]
-		}
-		contexts = append(contexts, content)
-	}
+	contexts := buildAnswerContexts(docs)
 
 	go func() {
 		defer close(ch)
@@ -715,6 +709,25 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	}()
 
 	return m.readNextChunk()
+}
+
+func (m *Model) answerContexts() []string {
+	return buildAnswerContexts(m.results)
+}
+
+func buildAnswerContexts(docs []*storage.Document) []string {
+	contexts := make([]string, 0, 5)
+	for i, doc := range docs {
+		if i >= 5 {
+			break
+		}
+		content := doc.Content
+		if len(content) > 1000 {
+			content = content[:1000]
+		}
+		contexts = append(contexts, content)
+	}
+	return contexts
 }
 
 func (m *Model) cancelStream() {

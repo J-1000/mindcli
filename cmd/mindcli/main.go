@@ -1034,6 +1034,7 @@ func runAsk(question string) error {
 		}
 		contexts = append(contexts, content)
 	}
+	conf := query.EstimateAnswerConfidence(question, contexts)
 
 	// Generate answer via Ollama with streaming.
 	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
@@ -1052,6 +1053,7 @@ func runAsk(question string) error {
 		return nil
 	}
 
+	fmt.Printf("\nConfidence: %s (%.2f)\n", strings.ToUpper(conf.Level), conf.Score)
 	fmt.Printf("\n\nSources:\n")
 	for i, doc := range docs {
 		if i >= 5 {

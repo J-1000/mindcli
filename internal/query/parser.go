@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -27,6 +28,12 @@ type ParsedQuery struct {
 	SearchTerms  string      // Terms for BM25/vector search
 	TimeFilter   string      // Extracted time reference (e.g., "last week")
 	SourceFilter string      // Extracted source filter (e.g., "emails")
+}
+
+// AnswerConfidence represents a simple confidence estimate for generated answers.
+type AnswerConfidence struct {
+	Score float64 // [0,1]
+	Level string  // low, medium, high
 }
 
 // LLMClient calls a local Ollama instance for text generation.
@@ -124,14 +131,14 @@ func ParseQuery(query string) ParsedQuery {
 
 	// Extract source filters.
 	sourceKeywords := map[string]string{
-		"in my notes":   "markdown",
-		"in my emails":  "email",
-		"in emails":     "email",
-		"from browser":  "browser",
-		"in browser":    "browser",
+		"in my notes":    "markdown",
+		"in my emails":   "email",
+		"in emails":      "email",
+		"from browser":   "browser",
+		"in browser":     "browser",
 		"from clipboard": "clipboard",
-		"in pdfs":       "pdf",
-		"in pdf":        "pdf",
+		"in pdfs":        "pdf",
+		"in pdf":         "pdf",
 	}
 	for keyword, source := range sourceKeywords {
 		if strings.Contains(lower, keyword) {
@@ -240,4 +247,98 @@ func (c *LLMClient) GenerateAnswerStream(ctx context.Context, question string, c
 		return nil
 	}
 	return c.GenerateStream(ctx, buildRAGPrompt(question, contexts), onChunk)
+}
+
+// EstimateAnswerConfidence estimates answer confidence from question/context coverage.
+func EstimateAnswerConfidence(question string, contexts []string) AnswerConfidence {
+	if len(contexts) == 0 {
+		return AnswerConfidence{Score: 0, Level: "low"}
+	}
+
+	questionTokens := tokenize(question)
+	contextCountScore := minFloat(float64(len(contexts)), 5) / 5.0
+
+	var totalLen int
+	bestOverlap := 0.0
+	mergedContextTokens := make(map[string]struct{})
+	for _, ctx := range contexts {
+		totalLen += len(ctx)
+		ctxTokens := tokenize(ctx)
+		for tok := range ctxTokens {
+			mergedContextTokens[tok] = struct{}{}
+		}
+		overlap := tokenOverlap(questionTokens, ctxTokens)
+		if overlap > bestOverlap {
+			bestOverlap = overlap
+		}
+	}
+	unionOverlap := tokenOverlap(questionTokens, mergedContextTokens)
+
+	avgLen := float64(totalLen) / float64(len(contexts))
+	lengthScore := minFloat(avgLen, 800) / 800.0
+
+	// Weighted heuristic:
+	// - more supporting contexts => higher confidence
+	// - reasonable context depth => higher confidence
+	// - lexical overlap with the question => higher confidence
+	score := 0.25*contextCountScore + 0.15*lengthScore + 0.30*bestOverlap + 0.30*unionOverlap
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+
+	level := "low"
+	switch {
+	case score >= 0.60:
+		level = "high"
+	case score >= 0.35:
+		level = "medium"
+	}
+
+	return AnswerConfidence{Score: score, Level: level}
+}
+
+var tokenSplitRe = regexp.MustCompile(`[^a-z0-9]+`)
+var stopwords = map[string]struct{}{
+	"what": {}, "when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "how": {},
+	"the": {}, "and": {}, "for": {}, "with": {}, "did": {}, "about": {}, "write": {},
+	"from": {}, "into": {}, "this": {}, "that": {}, "your": {}, "were": {}, "have": {},
+}
+
+func tokenize(s string) map[string]struct{} {
+	s = strings.ToLower(s)
+	parts := tokenSplitRe.Split(s, -1)
+	out := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		if len(p) < 3 {
+			continue
+		}
+		if _, skip := stopwords[p]; skip {
+			continue
+		}
+		out[p] = struct{}{}
+	}
+	return out
+}
+
+func tokenOverlap(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	var shared int
+	for token := range a {
+		if _, ok := b[token]; ok {
+			shared++
+		}
+	}
+	return float64(shared) / float64(len(a))
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
