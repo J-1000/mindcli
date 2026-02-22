@@ -36,4 +36,8 @@ func TestRedactorNoPatterns(t *testing.T) {
 	if got := redactor.Redact(input); got != input {
 		t.Fatalf("Redact() = %q, want %q", got, input)
 	}
+
+	if redactor.Enabled() {
+		t.Fatalf("Enabled() = true, want false")
+	}
 }

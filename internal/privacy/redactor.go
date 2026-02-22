@@ -22,6 +22,11 @@ type Redactor struct {
 	patterns []*regexp.Regexp
 }
 
+// Enabled reports whether redaction is configured.
+func (r Redactor) Enabled() bool {
+	return len(r.patterns) > 0
+}
+
 // NewRedactor compiles patterns and returns any errors for invalid entries.
 func NewRedactor(patterns []string) (Redactor, []error) {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
