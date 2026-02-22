@@ -340,6 +340,7 @@ mindcli/
    - CLI flags
    - Environment variables
    - Sensible defaults
+   - Privacy redaction patterns
 
 3. **Documentation**
    - README with screenshots
