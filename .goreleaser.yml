@@ -41,3 +41,16 @@ release:
   github:
     owner: jankowtf
     name: mindcli
+
+brews:
+  - repository:
+      owner: jankowtf
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/jankowtf/mindcli
+    description: Fast, private TUI for personal knowledge management with AI-powered search
+    license: MIT
+    install: |
+      bin.install "mindcli"
+    test: |
+      system "#{bin}/mindcli", "version"
