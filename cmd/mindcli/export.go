@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
 
@@ -21,17 +22,18 @@ type exportDoc struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
-func exportJSON(w io.Writer, results storage.SearchResults) error {
+func exportJSON(w io.Writer, results storage.SearchResults, redactor privacy.Redactor) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	docs := make([]exportDoc, 0, len(results))
 	for _, r := range results {
-		docs = append(docs, toExportDoc(r))
+		docs = append(docs, toExportDoc(r, redactor))
 	}
 	return enc.Encode(docs)
 }
 
-func exportCSV(w io.Writer, results storage.SearchResults) error {
+func exportCSV(w io.Writer, results storage.SearchResults, redactor privacy.Redactor) error {
+	_ = redactor
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 	cw.Write([]string{"title", "path", "source", "score", "tags", "modified_at"})
@@ -48,7 +50,7 @@ func exportCSV(w io.Writer, results storage.SearchResults) error {
 	return cw.Error()
 }
 
-func exportMarkdown(w io.Writer, results storage.SearchResults) error {
+func exportMarkdown(w io.Writer, results storage.SearchResults, redactor privacy.Redactor) error {
 	for i, r := range results {
 		fmt.Fprintf(w, "## %d. %s\n\n", i+1, r.Document.Title)
 		fmt.Fprintf(w, "- **Source:** %s\n", r.Document.Source)
@@ -57,17 +59,17 @@ func exportMarkdown(w io.Writer, results storage.SearchResults) error {
 		if tags := r.Document.Metadata["tags"]; tags != "" {
 			fmt.Fprintf(w, "- **Tags:** %s\n", tags)
 		}
-		fmt.Fprintf(w, "\n%s\n\n---\n\n", r.Document.Preview)
+		fmt.Fprintf(w, "\n%s\n\n---\n\n", redactor.Redact(r.Document.Preview))
 	}
 	return nil
 }
 
-func toExportDoc(r *storage.SearchResult) exportDoc {
+func toExportDoc(r *storage.SearchResult, redactor privacy.Redactor) exportDoc {
 	return exportDoc{
 		Title:      r.Document.Title,
 		Path:       r.Document.Path,
 		Source:     string(r.Document.Source),
-		Preview:    r.Document.Preview,
+		Preview:    redactor.Redact(r.Document.Preview),
 		Score:      r.Score,
 		Tags:       r.Document.Metadata["tags"],
 		ModifiedAt: r.Document.ModifiedAt.Format(time.RFC3339),

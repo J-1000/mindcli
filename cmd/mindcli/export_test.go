@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
 
@@ -15,24 +16,24 @@ func testResults() storage.SearchResults {
 	return storage.SearchResults{
 		&storage.SearchResult{
 			Document: &storage.Document{
-				ID:       "doc1",
-				Source:   storage.SourceMarkdown,
-				Path:     "/notes/go.md",
-				Title:    "Go Programming",
-				Preview:  "Go is great for concurrency.",
-				Metadata: map[string]string{"tags": "go,concurrency"},
+				ID:         "doc1",
+				Source:     storage.SourceMarkdown,
+				Path:       "/notes/go.md",
+				Title:      "Go Programming",
+				Preview:    "Go is great for concurrency.",
+				Metadata:   map[string]string{"tags": "go,concurrency"},
 				ModifiedAt: now,
 			},
 			Score: 0.95,
 		},
 		&storage.SearchResult{
 			Document: &storage.Document{
-				ID:       "doc2",
-				Source:   storage.SourcePDF,
-				Path:     "/docs/rust.pdf",
-				Title:    "Rust Overview",
-				Preview:  "Rust provides memory safety.",
-				Metadata: map[string]string{},
+				ID:         "doc2",
+				Source:     storage.SourcePDF,
+				Path:       "/docs/rust.pdf",
+				Title:      "Rust Overview",
+				Preview:    "Rust provides memory safety.",
+				Metadata:   map[string]string{},
 				ModifiedAt: now.Add(-24 * time.Hour),
 			},
 			Score: 0.72,
@@ -44,7 +45,7 @@ func TestExportJSON(t *testing.T) {
 	var buf bytes.Buffer
 	results := testResults()
 
-	if err := exportJSON(&buf, results); err != nil {
+	if err := exportJSON(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportJSON failed: %v", err)
 	}
 
@@ -76,7 +77,7 @@ func TestExportCSV(t *testing.T) {
 	var buf bytes.Buffer
 	results := testResults()
 
-	if err := exportCSV(&buf, results); err != nil {
+	if err := exportCSV(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportCSV failed: %v", err)
 	}
 
@@ -103,7 +104,7 @@ func TestExportMarkdown(t *testing.T) {
 	var buf bytes.Buffer
 	results := testResults()
 
-	if err := exportMarkdown(&buf, results); err != nil {
+	if err := exportMarkdown(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportMarkdown failed: %v", err)
 	}
 
@@ -127,12 +128,42 @@ func TestExportMarkdown(t *testing.T) {
 	}
 }
 
+func TestExportRedactsPreview(t *testing.T) {
+	redactor, errs := privacy.NewRedactor([]string{"Go"})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected redactor errors: %v", errs)
+	}
+
+	results := testResults()
+
+	var jsonBuf bytes.Buffer
+	if err := exportJSON(&jsonBuf, results, redactor); err != nil {
+		t.Fatalf("exportJSON failed: %v", err)
+	}
+
+	var docs []exportDoc
+	if err := json.Unmarshal(jsonBuf.Bytes(), &docs); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if docs[0].Preview != "[REDACTED] is great for concurrency." {
+		t.Fatalf("preview = %q, want redacted", docs[0].Preview)
+	}
+
+	var mdBuf bytes.Buffer
+	if err := exportMarkdown(&mdBuf, results, redactor); err != nil {
+		t.Fatalf("exportMarkdown failed: %v", err)
+	}
+	if !strings.Contains(mdBuf.String(), "[REDACTED] is great for concurrency.") {
+		t.Fatalf("markdown output missing redaction: %s", mdBuf.String())
+	}
+}
+
 func TestExportEmptyResults(t *testing.T) {
 	var buf bytes.Buffer
 	results := storage.SearchResults{}
 
 	// JSON: should produce empty array
-	if err := exportJSON(&buf, results); err != nil {
+	if err := exportJSON(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportJSON with empty results failed: %v", err)
 	}
 	if !strings.Contains(buf.String(), "[]") {
@@ -141,7 +172,7 @@ func TestExportEmptyResults(t *testing.T) {
 
 	// CSV: should produce only header
 	buf.Reset()
-	if err := exportCSV(&buf, results); err != nil {
+	if err := exportCSV(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportCSV with empty results failed: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -151,7 +182,7 @@ func TestExportEmptyResults(t *testing.T) {
 
 	// Markdown: should produce nothing
 	buf.Reset()
-	if err := exportMarkdown(&buf, results); err != nil {
+	if err := exportMarkdown(&buf, results, privacy.Redactor{}); err != nil {
 		t.Fatalf("exportMarkdown with empty results failed: %v", err)
 	}
 	if buf.String() != "" {
