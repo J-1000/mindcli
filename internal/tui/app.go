@@ -670,7 +670,7 @@ func (m *Model) showAnswer() {
 	if m.answerText == "" && m.streaming {
 		sb.WriteString(styles.PreviewContentStyle.Render("Thinking..."))
 	} else {
-		sb.WriteString(styles.PreviewContentStyle.Render(m.answerText))
+		sb.WriteString(styles.PreviewContentStyle.Render(m.redactor.Redact(m.answerText)))
 	}
 	if m.streaming {
 		sb.WriteString(styles.ResultSourceStyle.Render(" \u2588")) // block cursor
