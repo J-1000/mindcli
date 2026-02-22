@@ -1,6 +1,8 @@
 package sources
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -47,8 +49,8 @@ func TestChromeTimeToGo(t *testing.T) {
 
 func TestBuildBrowserDocument(t *testing.T) {
 	entries := []historyEntry{
-		{URL: "https://example.com", Title: "Example", VisitCount: 5, Browser: "chrome"},
-		{URL: "https://go.dev", Title: "Go Language", VisitCount: 3, Browser: "chrome"},
+		{URL: "https://example.com", Title: "Example", VisitCount: 5, Browser: "chrome", Kind: "history"},
+		{URL: "https://go.dev", Title: "Go Language", VisitCount: 3, Browser: "chrome", Kind: "bookmark"},
 	}
 
 	file := FileInfo{
@@ -67,7 +69,51 @@ func TestBuildBrowserDocument(t *testing.T) {
 	if doc.Metadata["entry_count"] != "2" {
 		t.Errorf("entry_count = %q, want %q", doc.Metadata["entry_count"], "2")
 	}
-	if doc.Title != "Chrome Browser History (2 entries)" {
+	if doc.Metadata["history_count"] != "1" {
+		t.Errorf("history_count = %q, want %q", doc.Metadata["history_count"], "1")
+	}
+	if doc.Metadata["bookmark_count"] != "1" {
+		t.Errorf("bookmark_count = %q, want %q", doc.Metadata["bookmark_count"], "1")
+	}
+	if doc.Title != "Chrome Browser Data (2 entries)" {
 		t.Errorf("Title = %q", doc.Title)
+	}
+}
+
+func TestReadChromeBookmarks(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "browser-bookmarks-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	bookmarksPath := filepath.Join(tmpDir, "Bookmarks")
+	data := `{
+  "roots": {
+    "bookmark_bar": {
+      "children": [
+        {"type":"url","name":"Example","url":"https://example.com"},
+        {"type":"folder","name":"Folder","children":[
+          {"type":"url","name":"Go","url":"https://go.dev"}
+        ]}
+      ]
+    }
+  }
+}`
+	if err := os.WriteFile(bookmarksPath, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := readChromeBookmarks(bookmarksPath)
+	if err != nil {
+		t.Fatalf("readChromeBookmarks() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	for _, e := range entries {
+		if e.Kind != "bookmark" {
+			t.Fatalf("entry Kind = %q, want bookmark", e.Kind)
+		}
 	}
 }

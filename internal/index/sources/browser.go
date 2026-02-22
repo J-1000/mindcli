@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +40,7 @@ func (b *BrowserSource) Name() storage.Source {
 func (b *BrowserSource) MatchesPath(path string) bool {
 	target := normalizePath(path)
 	for _, browser := range b.browsers {
-		if normalizePath(browserDBPath(browser)) == target {
+		if normalizePath(browserDBPath(browser)) == target || normalizePath(browserBookmarkPath(browser)) == target {
 			return true
 		}
 	}
@@ -53,6 +54,7 @@ type historyEntry struct {
 	VisitCount int
 	LastVisit  time.Time
 	Browser    string
+	Kind       string // history or bookmark
 }
 
 // Scan finds browser history databases and returns them as files to index.
@@ -66,24 +68,27 @@ func (b *BrowserSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error
 		defer close(errs)
 
 		for _, browser := range b.browsers {
-			dbPath := browserDBPath(browser)
-			if dbPath == "" {
-				continue
+			candidates := []string{
+				browserDBPath(browser),
+				browserBookmarkPath(browser),
 			}
-
-			info, err := os.Stat(dbPath)
-			if err != nil {
-				continue // Browser not installed or history not accessible
-			}
-
-			select {
-			case files <- FileInfo{
-				Path:       dbPath,
-				ModifiedAt: info.ModTime().Unix(),
-				Size:       info.Size(),
-			}:
-			case <-ctx.Done():
-				return
+			for _, p := range candidates {
+				if p == "" {
+					continue
+				}
+				info, err := os.Stat(p)
+				if err != nil {
+					continue // Browser not installed or file not accessible.
+				}
+				select {
+				case files <- FileInfo{
+					Path:       p,
+					ModifiedAt: info.ModTime().Unix(),
+					Size:       info.Size(),
+				}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -94,6 +99,15 @@ func (b *BrowserSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error
 // Parse reads browser history and returns a document with all entries.
 func (b *BrowserSource) Parse(ctx context.Context, file FileInfo) (*storage.Document, error) {
 	browser := identifyBrowser(file.Path)
+	base := strings.ToLower(filepath.Base(file.Path))
+
+	if browser == "chrome" && base == "bookmarks" {
+		entries, err := readChromeBookmarks(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		return buildBrowserDocument(file, browser, entries), nil
+	}
 
 	// Copy the database to a temp file since browsers may lock it.
 	tmpFile, err := copyToTemp(file.Path)
@@ -110,6 +124,12 @@ func (b *BrowserSource) Parse(ctx context.Context, file FileInfo) (*storage.Docu
 		entries, parseErr = readChromeHistory(tmpFile)
 	case "firefox":
 		entries, parseErr = readFirefoxHistory(tmpFile)
+		if parseErr == nil {
+			bookmarks, err := readFirefoxBookmarks(tmpFile)
+			if err == nil {
+				entries = append(entries, bookmarks...)
+			}
+		}
 	case "safari":
 		entries, parseErr = readSafariHistory(tmpFile)
 	default:
@@ -148,6 +168,25 @@ func browserDBPath(browser string) string {
 	case "safari":
 		if runtime.GOOS == "darwin" {
 			return filepath.Join(home, "Library/Safari/History.db")
+		}
+	}
+	return ""
+}
+
+// browserBookmarkPath returns bookmark file path for browsers that expose it.
+func browserBookmarkPath(browser string) string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+
+	switch browser {
+	case "chrome":
+		switch runtime.GOOS {
+		case "darwin":
+			return filepath.Join(home, "Library/Application Support/Google/Chrome/Default/Bookmarks")
+		case "linux":
+			return filepath.Join(home, ".config/google-chrome/Default/Bookmarks")
 		}
 	}
 	return ""
@@ -245,6 +284,7 @@ func readChromeHistory(dbPath string) ([]historyEntry, error) {
 			VisitCount: visitCount,
 			LastVisit:  t,
 			Browser:    "chrome",
+			Kind:       "history",
 		})
 	}
 
@@ -293,6 +333,7 @@ func readFirefoxHistory(dbPath string) ([]historyEntry, error) {
 			VisitCount: visitCount,
 			LastVisit:  t,
 			Browser:    "firefox",
+			Kind:       "history",
 		})
 	}
 
@@ -335,6 +376,7 @@ func readSafariHistory(dbPath string) ([]historyEntry, error) {
 			Title:      title,
 			VisitCount: visitCount,
 			Browser:    "safari",
+			Kind:       "history",
 		})
 	}
 
@@ -349,10 +391,97 @@ func chromeTimeToGo(chromeTime int64) time.Time {
 	return time.Unix(unixMicro/1000000, (unixMicro%1000000)*1000)
 }
 
+func readFirefoxBookmarks(dbPath string) ([]historyEntry, error) {
+	db, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT p.url, COALESCE(b.title, p.title, '') AS title
+		FROM moz_bookmarks b
+		JOIN moz_places p ON b.fk = p.id
+		WHERE b.type = 1 AND p.url IS NOT NULL AND p.url != ''
+		ORDER BY b.dateAdded DESC
+		LIMIT 2000
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying firefox bookmarks: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []historyEntry
+	for rows.Next() {
+		var url, title string
+		if err := rows.Scan(&url, &title); err != nil {
+			continue
+		}
+		entries = append(entries, historyEntry{
+			URL:     url,
+			Title:   title,
+			Browser: "firefox",
+			Kind:    "bookmark",
+		})
+	}
+	return entries, nil
+}
+
+type chromeBookmarksPayload struct {
+	Roots map[string]chromeBookmarkNode `json:"roots"`
+}
+
+type chromeBookmarkNode struct {
+	Name     string               `json:"name"`
+	Type     string               `json:"type"`
+	URL      string               `json:"url"`
+	Children []chromeBookmarkNode `json:"children"`
+}
+
+func readChromeBookmarks(path string) ([]historyEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading chrome bookmarks: %w", err)
+	}
+
+	var payload chromeBookmarksPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("parsing chrome bookmarks: %w", err)
+	}
+
+	var entries []historyEntry
+	for _, root := range payload.Roots {
+		collectChromeBookmarks(root, &entries)
+	}
+	return entries, nil
+}
+
+func collectChromeBookmarks(node chromeBookmarkNode, out *[]historyEntry) {
+	if node.Type == "url" && node.URL != "" {
+		*out = append(*out, historyEntry{
+			URL:     node.URL,
+			Title:   node.Name,
+			Browser: "chrome",
+			Kind:    "bookmark",
+		})
+	}
+	for _, child := range node.Children {
+		collectChromeBookmarks(child, out)
+	}
+}
+
 // buildBrowserDocument creates a Document from browser history entries.
 func buildBrowserDocument(file FileInfo, browser string, entries []historyEntry) *storage.Document {
 	var sb strings.Builder
+	var historyCount int
+	var bookmarkCount int
 	for _, e := range entries {
+		if e.Kind == "bookmark" {
+			bookmarkCount++
+			sb.WriteString("[Bookmark] ")
+		} else {
+			historyCount++
+		}
 		sb.WriteString(e.Title)
 		sb.WriteString("\n")
 		sb.WriteString(e.URL)
@@ -361,7 +490,7 @@ func buildBrowserDocument(file FileInfo, browser string, entries []historyEntry)
 
 	content := sb.String()
 	browserName := strings.ToUpper(browser[:1]) + browser[1:]
-	title := fmt.Sprintf("%s Browser History (%d entries)", browserName, len(entries))
+	title := fmt.Sprintf("%s Browser Data (%d entries)", browserName, len(entries))
 
 	pathHash := sha256.Sum256([]byte(file.Path))
 	id := hex.EncodeToString(pathHash[:8])
@@ -376,8 +505,10 @@ func buildBrowserDocument(file FileInfo, browser string, entries []historyEntry)
 		Content: content,
 		Preview: generatePreview(content, 500),
 		Metadata: map[string]string{
-			"browser":     browser,
-			"entry_count": fmt.Sprintf("%d", len(entries)),
+			"browser":        browser,
+			"entry_count":    fmt.Sprintf("%d", len(entries)),
+			"history_count":  fmt.Sprintf("%d", historyCount),
+			"bookmark_count": fmt.Sprintf("%d", bookmarkCount),
 		},
 		ContentHash: hex.EncodeToString(contentHash[:]),
 		IndexedAt:   time.Now(),
