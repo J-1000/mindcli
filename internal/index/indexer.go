@@ -67,10 +67,13 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 
 	// Add email source if enabled
 	if cfg.Sources.Email.Enabled {
-		srcs = append(srcs, sources.NewEmailSource(
+		emailSrc := sources.NewEmailSource(
 			cfg.Sources.Email.Paths,
 			cfg.Sources.Email.Formats,
-		))
+		)
+		emailSrc.SetIgnore(cfg.Sources.Email.Ignore)
+		emailSrc.SetMaskSensitivePreview(cfg.Sources.Email.MaskSensitivePreview)
+		srcs = append(srcs, emailSrc)
 	}
 
 	// Add browser history source if enabled
@@ -429,7 +432,7 @@ func (idx *Indexer) SaveVectors() error {
 // NoopProgressReporter is a no-op progress reporter.
 type NoopProgressReporter struct{}
 
-func (n *NoopProgressReporter) OnStart(source string, total int)                       {}
+func (n *NoopProgressReporter) OnStart(source string, total int)                          {}
 func (n *NoopProgressReporter) OnProgress(source string, current, total int, path string) {}
-func (n *NoopProgressReporter) OnComplete(source string, indexed, errors int)          {}
-func (n *NoopProgressReporter) OnError(source string, path string, err error)          {}
+func (n *NoopProgressReporter) OnComplete(source string, indexed, errors int)             {}
+func (n *NoopProgressReporter) OnError(source string, path string, err error)             {}

@@ -12,6 +12,8 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,9 +22,10 @@ import (
 
 // EmailSource indexes email archives (mbox, maildir, emlx).
 type EmailSource struct {
-	paths   []string
-	formats []string
-	ignore  []string
+	paths                []string
+	formats              []string
+	ignore               []string
+	maskSensitivePreview bool
 }
 
 // NewEmailSource creates a new email source.
@@ -31,9 +34,20 @@ func NewEmailSource(paths, formats []string) *EmailSource {
 		formats = []string{"mbox", "maildir", "emlx"}
 	}
 	return &EmailSource{
-		paths:   paths,
-		formats: formats,
+		paths:                paths,
+		formats:              formats,
+		maskSensitivePreview: true,
 	}
+}
+
+// SetIgnore configures path exclusion patterns.
+func (e *EmailSource) SetIgnore(patterns []string) {
+	e.ignore = append([]string(nil), patterns...)
+}
+
+// SetMaskSensitivePreview controls redaction in preview/metadata fields.
+func (e *EmailSource) SetMaskSensitivePreview(enabled bool) {
+	e.maskSensitivePreview = enabled
 }
 
 // Name returns the source name.
@@ -91,6 +105,9 @@ func (e *EmailSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) 
 				default:
 				}
 				if d.IsDir() {
+					return nil
+				}
+				if e.shouldIgnorePath(fp) {
 					return nil
 				}
 				if !e.isEmailFile(fp) {
@@ -204,7 +221,7 @@ func (e *EmailSource) parseMbox(file FileInfo) (*storage.Document, error) {
 		}
 	}
 
-	return buildEmailDocument(file, messages), nil
+	return buildEmailDocument(file, messages, e.maskSensitivePreview), nil
 }
 
 // parseEmlx parses an Apple Mail .emlx file.
@@ -229,7 +246,7 @@ func (e *EmailSource) parseEmlx(file FileInfo) (*storage.Document, error) {
 		return nil, fmt.Errorf("parsing emlx message: %w", err)
 	}
 
-	return buildEmailDocument(file, []emailMessage{msg}), nil
+	return buildEmailDocument(file, []emailMessage{msg}, e.maskSensitivePreview), nil
 }
 
 // parseSingleEmail parses a single .eml or maildir message.
@@ -245,16 +262,17 @@ func (e *EmailSource) parseSingleEmail(file FileInfo) (*storage.Document, error)
 		return nil, fmt.Errorf("parsing email: %w", err)
 	}
 
-	return buildEmailDocument(file, []emailMessage{msg}), nil
+	return buildEmailDocument(file, []emailMessage{msg}, e.maskSensitivePreview), nil
 }
 
 // emailMessage holds parsed email data.
 type emailMessage struct {
-	Subject string
-	From    string
-	To      string
-	Date    time.Time
-	Body    string
+	Subject     string
+	From        string
+	To          string
+	Date        time.Time
+	Body        string
+	Attachments []string
 }
 
 // parseEmailMessage parses a single RFC 2822 email message.
@@ -273,12 +291,12 @@ func parseEmailMessage(r io.Reader) (emailMessage, error) {
 		em.Date, _ = mail.ParseDate(dateStr)
 	}
 
-	em.Body = extractBody(msg)
+	em.Body, em.Attachments = extractBodyAndAttachments(msg)
 	return em, nil
 }
 
-// extractBody extracts plain text from an email message body.
-func extractBody(msg *mail.Message) string {
+// extractBodyAndAttachments extracts plain text and attachment names from an email body.
+func extractBodyAndAttachments(msg *mail.Message) (string, []string) {
 	contentType := msg.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "text/plain"
@@ -288,32 +306,33 @@ func extractBody(msg *mail.Message) string {
 	if err != nil {
 		// Fall back to reading body directly.
 		body, _ := io.ReadAll(io.LimitReader(msg.Body, 1<<20)) // 1MB limit
-		return string(body)
+		return string(body), nil
 	}
 
 	if strings.HasPrefix(mediaType, "text/plain") {
 		body, _ := io.ReadAll(io.LimitReader(msg.Body, 1<<20))
-		return string(body)
+		return string(body), nil
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
 			body, _ := io.ReadAll(io.LimitReader(msg.Body, 1<<20))
-			return string(body)
+			return string(body), nil
 		}
-		return extractMultipartText(msg.Body, boundary)
+		return extractMultipartTextAndAttachments(msg.Body, boundary)
 	}
 
 	// For HTML-only or other types, read raw.
 	body, _ := io.ReadAll(io.LimitReader(msg.Body, 1<<20))
-	return stripHTML(string(body))
+	return stripHTML(string(body)), nil
 }
 
-// extractMultipartText extracts text/plain parts from a multipart message.
-func extractMultipartText(r io.Reader, boundary string) string {
+// extractMultipartTextAndAttachments extracts text/plain parts and attachment names.
+func extractMultipartTextAndAttachments(r io.Reader, boundary string) (string, []string) {
 	mr := multipart.NewReader(r, boundary)
 	var textParts []string
+	attachments := make(map[string]struct{})
 
 	for {
 		part, err := mr.NextPart()
@@ -324,16 +343,27 @@ func extractMultipartText(r io.Reader, boundary string) string {
 		ct := part.Header.Get("Content-Type")
 		mediaType, _, _ := mime.ParseMediaType(ct)
 
+		filename := strings.TrimSpace(part.FileName())
+		if filename != "" {
+			attachments[filename] = struct{}{}
+		}
+
 		if strings.HasPrefix(mediaType, "text/plain") {
 			body, _ := io.ReadAll(io.LimitReader(part, 1<<20))
 			textParts = append(textParts, string(body))
 		}
 	}
 
-	if len(textParts) > 0 {
-		return strings.Join(textParts, "\n\n")
+	var attachmentNames []string
+	for name := range attachments {
+		attachmentNames = append(attachmentNames, name)
 	}
-	return ""
+	sort.Strings(attachmentNames)
+
+	if len(textParts) > 0 {
+		return strings.Join(textParts, "\n\n"), attachmentNames
+	}
+	return "", attachmentNames
 }
 
 // stripHTML removes HTML tags from text (basic implementation).
@@ -367,7 +397,7 @@ func decodeHeader(s string) string {
 }
 
 // buildEmailDocument creates a Document from parsed email messages.
-func buildEmailDocument(file FileInfo, messages []emailMessage) *storage.Document {
+func buildEmailDocument(file FileInfo, messages []emailMessage, maskSensitivePreview bool) *storage.Document {
 	if len(messages) == 0 {
 		return &storage.Document{
 			ID:          hashPath(file.Path),
@@ -386,6 +416,7 @@ func buildEmailDocument(file FileInfo, messages []emailMessage) *storage.Documen
 	var sb strings.Builder
 	var title string
 	metadata := make(map[string]string)
+	attachments := make(map[string]struct{})
 
 	for i, msg := range messages {
 		if i == 0 {
@@ -397,6 +428,12 @@ func buildEmailDocument(file FileInfo, messages []emailMessage) *storage.Documen
 			metadata["to"] = msg.To
 			if !msg.Date.IsZero() {
 				metadata["date"] = msg.Date.Format(time.RFC3339)
+			}
+		}
+		for _, name := range msg.Attachments {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				attachments[name] = struct{}{}
 			}
 		}
 
@@ -414,6 +451,21 @@ func buildEmailDocument(file FileInfo, messages []emailMessage) *storage.Documen
 	}
 
 	content := sb.String()
+	if len(attachments) > 0 {
+		var names []string
+		for name := range attachments {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		metadata["attachments"] = strings.Join(names, ", ")
+	}
+
+	preview := generatePreview(content, 500)
+	if maskSensitivePreview {
+		preview = maskSensitiveText(preview)
+		metadata["from"] = maskEmailMetadata(metadata["from"])
+		metadata["to"] = maskEmailMetadata(metadata["to"])
+	}
 
 	return &storage.Document{
 		ID:          hashPath(file.Path),
@@ -421,12 +473,55 @@ func buildEmailDocument(file FileInfo, messages []emailMessage) *storage.Documen
 		Path:        file.Path,
 		Title:       title,
 		Content:     content,
-		Preview:     generatePreview(content, 500),
+		Preview:     preview,
 		Metadata:    metadata,
 		ContentHash: hashContent(content),
 		IndexedAt:   time.Now(),
 		ModifiedAt:  time.Unix(file.ModifiedAt, 0),
 	}
+}
+
+func (e *EmailSource) shouldIgnorePath(path string) bool {
+	if len(e.ignore) == 0 {
+		return false
+	}
+	lowerPath := strings.ToLower(normalizePath(path))
+	for _, pattern := range e.ignore {
+		pattern = strings.TrimSpace(strings.ToLower(pattern))
+		if pattern == "" {
+			continue
+		}
+		pattern = strings.TrimPrefix(pattern, "./")
+		if strings.Contains(lowerPath, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	emailRe       = regexp.MustCompile(`(?i)([a-z0-9._%+\-])([a-z0-9._%+\-]{0,64})@([a-z0-9.\-]+\.[a-z]{2,})`)
+	longNumberRe  = regexp.MustCompile(`\b\d{13,19}\b`)
+	bearerTokenRe = regexp.MustCompile(`(?i)bearer\s+[a-z0-9._\-]{16,}`)
+	apiKeyLikeRe  = regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret)\s*[:=]\s*([^\s,;]+)`)
+)
+
+func maskSensitiveText(text string) string {
+	text = emailRe.ReplaceAllStringFunc(text, func(m string) string {
+		return maskEmailMetadata(m)
+	})
+	text = longNumberRe.ReplaceAllString(text, "[redacted-number]")
+	text = bearerTokenRe.ReplaceAllString(text, "Bearer [redacted-token]")
+	text = apiKeyLikeRe.ReplaceAllString(text, "$1=[redacted]")
+	return text
+}
+
+func maskEmailMetadata(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	return emailRe.ReplaceAllString(value, "$1***@$3")
 }
 
 func hashPath(path string) string {

@@ -136,8 +136,8 @@ Just a quick note about the meeting tomorrow.
 	if doc.Title != "Quick Note" {
 		t.Errorf("Title = %q, want %q", doc.Title, "Quick Note")
 	}
-	if doc.Metadata["from"] != "alice@example.com" {
-		t.Errorf("from = %q, want %q", doc.Metadata["from"], "alice@example.com")
+	if doc.Metadata["from"] != "a***@example.com" {
+		t.Errorf("from = %q, want %q", doc.Metadata["from"], "a***@example.com")
 	}
 }
 
@@ -156,5 +156,119 @@ func TestStripHTML(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("stripHTML(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestEmailSourceIgnorePatterns(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "email-ignore-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	includePath := filepath.Join(tmpDir, "inbox.eml")
+	excludedDir := filepath.Join(tmpDir, "private")
+	excludedPath := filepath.Join(excludedDir, "secret.eml")
+	if err := os.MkdirAll(excludedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := "From: a@example.com\nTo: b@example.com\nSubject: test\n\nbody"
+	if err := os.WriteFile(includePath, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(excludedPath, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := NewEmailSource([]string{tmpDir}, nil)
+	src.SetIgnore([]string{"private"})
+	files, errs := src.Scan(context.Background())
+
+	var paths []string
+	for f := range files {
+		paths = append(paths, f.Path)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected scan error: %v", err)
+		}
+	}
+
+	if len(paths) != 1 || paths[0] != includePath {
+		t.Fatalf("Scan paths = %#v, want only %q", paths, includePath)
+	}
+}
+
+func TestParseEmailMessageMultipartAttachments(t *testing.T) {
+	raw := strings.Join([]string{
+		"From: sender@example.com",
+		"To: receiver@example.com",
+		"Subject: With Attachment",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=BOUNDARY",
+		"",
+		"--BOUNDARY",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Body text",
+		"--BOUNDARY",
+		`Content-Type: application/pdf; name="invoice.pdf"`,
+		"Content-Disposition: attachment; filename=\"invoice.pdf\"",
+		"",
+		"<binary>",
+		"--BOUNDARY--",
+		"",
+	}, "\n")
+
+	msg, err := parseEmailMessage(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("parseEmailMessage: %v", err)
+	}
+
+	if !strings.Contains(msg.Body, "Body text") {
+		t.Fatalf("Body = %q, want to contain text part", msg.Body)
+	}
+	if len(msg.Attachments) != 1 || msg.Attachments[0] != "invoice.pdf" {
+		t.Fatalf("Attachments = %#v, want [invoice.pdf]", msg.Attachments)
+	}
+}
+
+func TestBuildEmailDocumentMasksPreviewAndMetadata(t *testing.T) {
+	file := FileInfo{Path: "/mail/test.eml", ModifiedAt: 1700000000}
+	messages := []emailMessage{
+		{
+			Subject: "Sensitive",
+			From:    "alice@example.com",
+			To:      "bob@example.com",
+			Body:    "Contact me at alice@example.com with api_key=secret123 and 4242424242424242",
+		},
+	}
+
+	doc := buildEmailDocument(file, messages, true)
+	if strings.Contains(doc.Preview, "alice@example.com") {
+		t.Fatalf("Preview should mask email addresses: %q", doc.Preview)
+	}
+	if strings.Contains(doc.Preview, "secret123") {
+		t.Fatalf("Preview should mask api key-like values: %q", doc.Preview)
+	}
+	if strings.Contains(doc.Preview, "4242424242424242") {
+		t.Fatalf("Preview should mask long numbers: %q", doc.Preview)
+	}
+	if doc.Metadata["from"] == "alice@example.com" {
+		t.Fatalf("Metadata from should be masked, got %q", doc.Metadata["from"])
+	}
+}
+
+func TestBuildEmailDocumentIncludesAttachmentsMetadata(t *testing.T) {
+	file := FileInfo{Path: "/mail/attach.eml", ModifiedAt: 1700000000}
+	messages := []emailMessage{
+		{Subject: "A", Body: "B", Attachments: []string{"a.pdf", "b.png"}},
+		{Subject: "C", Body: "D", Attachments: []string{"a.pdf"}},
+	}
+
+	doc := buildEmailDocument(file, messages, false)
+	if got := doc.Metadata["attachments"]; got != "a.pdf, b.png" {
+		t.Fatalf("attachments metadata = %q, want %q", got, "a.pdf, b.png")
 	}
 }
