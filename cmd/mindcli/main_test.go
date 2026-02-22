@@ -47,6 +47,7 @@ func TestPrintUsage(t *testing.T) {
 		"mindcli search",
 		"mindcli export",
 		"mindcli tag",
+		"mindcli clipboard",
 		"mindcli ask",
 		"mindcli config",
 		"mindcli version",
@@ -251,6 +252,60 @@ func TestParsePathsOverrideSupportsPathListSeparators(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got[%d]=%q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestPurgeClipboardDocuments(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mindcli-clipboard-purge-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(tmpDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		t.Fatalf("Failed to create search index: %v", err)
+	}
+	defer searchIndex.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	docs := []*storage.Document{
+		{ID: "clip-1", Source: storage.SourceClipboard, Path: "clipboard:1", Title: "clip1", Content: "old", ContentHash: "h1", IndexedAt: now, ModifiedAt: now.AddDate(0, 0, -40)},
+		{ID: "clip-2", Source: storage.SourceClipboard, Path: "clipboard:2", Title: "clip2", Content: "new", ContentHash: "h2", IndexedAt: now, ModifiedAt: now},
+	}
+	for _, doc := range docs {
+		if err := db.InsertDocument(ctx, doc); err != nil {
+			t.Fatalf("InsertDocument() error = %v", err)
+		}
+		if err := searchIndex.Index(ctx, doc); err != nil {
+			t.Fatalf("Index() error = %v", err)
+		}
+	}
+
+	removed, err := purgeClipboardDocuments(ctx, db, searchIndex, nil, docs, func(doc *storage.Document) bool {
+		return doc.ModifiedAt.Before(now.AddDate(0, 0, -30))
+	})
+	if err != nil {
+		t.Fatalf("purgeClipboardDocuments() error = %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	if _, err := db.GetDocument(ctx, "clip-1"); err == nil {
+		t.Fatalf("clip-1 should have been deleted")
+	}
+	if _, err := db.GetDocument(ctx, "clip-2"); err != nil {
+		t.Fatalf("clip-2 should remain, get error = %v", err)
 	}
 }
 

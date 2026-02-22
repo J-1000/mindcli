@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jankowtf/mindcli/internal/config"
@@ -57,6 +58,8 @@ func run() error {
 			return runExport(os.Args[2:])
 		case "tag":
 			return runTag(os.Args[2:])
+		case "clipboard":
+			return runClipboard(os.Args[2:])
 		case "collection":
 			return runCollection(os.Args[2:])
 		case "ask":
@@ -89,6 +92,7 @@ Usage:
   mindcli search "..." Search and print results
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli tag ...      Manage document tags (add, remove, list)
+  mindcli clipboard    Manage clipboard index (clear, cleanup)
   mindcli collection   Manage collections (create, delete, list, show, add, remove, rename)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
@@ -108,6 +112,8 @@ Examples:
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
   mindcli ask "what did I write about Go?"     # Ask a question
+  mindcli clipboard clear                       # Remove all clipboard documents from index
+  mindcli clipboard cleanup                     # Remove old clipboard documents by retention policy
   mindcli collection create "reading-list"   # Create a collection
   mindcli collection list                    # List all collections`)
 }
@@ -827,6 +833,113 @@ func runCollection(args []string) error {
 	}
 
 	return nil
+}
+
+func runClipboard(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: mindcli clipboard <clear|cleanup>")
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("getting database path: %w", err)
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	indexPath := filepath.Join(dataDir, "search.bleve")
+	searchIndex, err := search.NewBleveIndex(indexPath)
+	if err != nil {
+		return fmt.Errorf("opening search index: %w", err)
+	}
+	defer searchIndex.Close()
+
+	// Vector store is optional for clipboard management.
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	var vectors *storage.VectorStore
+	if _, err := os.Stat(vectorPath); err == nil {
+		if vs, err := storage.NewVectorStore(vectorPath); err == nil {
+			vectors = vs
+			defer vectors.Close()
+		}
+	}
+
+	ctx := context.Background()
+	docs, err := db.ListDocuments(ctx, storage.SourceClipboard)
+	if err != nil {
+		return fmt.Errorf("listing clipboard documents: %w", err)
+	}
+
+	switch args[0] {
+	case "clear":
+		removed, err := purgeClipboardDocuments(ctx, db, searchIndex, vectors, docs, func(*storage.Document) bool { return true })
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Removed %d clipboard documents.\n", removed)
+		return nil
+
+	case "cleanup":
+		cutoff := time.Now().AddDate(0, 0, -cfg.Sources.Clipboard.RetentionDays)
+		removed, err := purgeClipboardDocuments(ctx, db, searchIndex, vectors, docs, func(doc *storage.Document) bool {
+			return doc.ModifiedAt.Before(cutoff)
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Removed %d clipboard documents older than %s.\n", removed, cutoff.Format("2006-01-02"))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown clipboard subcommand %q: use clear or cleanup", args[0])
+	}
+}
+
+func purgeClipboardDocuments(
+	ctx context.Context,
+	db *storage.DB,
+	searchIndex *search.BleveIndex,
+	vectors *storage.VectorStore,
+	docs []*storage.Document,
+	shouldDelete func(*storage.Document) bool,
+) (int, error) {
+	removed := 0
+	for _, doc := range docs {
+		if !shouldDelete(doc) {
+			continue
+		}
+
+		chunks, err := db.GetChunksByDocument(ctx, doc.ID)
+		if err == nil && vectors != nil {
+			for _, chunk := range chunks {
+				vectors.Delete(chunk.ID)
+			}
+		}
+		_ = db.DeleteChunksByDocument(ctx, doc.ID)
+
+		if err := searchIndex.Delete(ctx, doc.ID); err != nil {
+			return removed, fmt.Errorf("removing %q from search index: %w", doc.ID, err)
+		}
+		if err := db.DeleteDocument(ctx, doc.ID); err != nil {
+			return removed, fmt.Errorf("removing %q from database: %w", doc.ID, err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func runAsk(question string) error {
