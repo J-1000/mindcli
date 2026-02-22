@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,9 +45,11 @@ type PDFSourceConfig struct {
 
 // EmailSourceConfig configures email indexing.
 type EmailSourceConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Paths   []string `yaml:"paths"`
-	Formats []string `yaml:"formats"`
+	Enabled              bool     `yaml:"enabled"`
+	Paths                []string `yaml:"paths"`
+	Formats              []string `yaml:"formats"`
+	Ignore               []string `yaml:"ignore"`
+	MaskSensitivePreview bool     `yaml:"mask_sensitive_preview"`
 }
 
 // BrowserSourceConfig configures browser history indexing.
@@ -105,9 +109,11 @@ func Default() *Config {
 				Paths:   []string{filepath.Join(homeDir, "Documents")},
 			},
 			Email: EmailSourceConfig{
-				Enabled: false,
-				Paths:   []string{},
-				Formats: []string{"mbox", "maildir"},
+				Enabled:              false,
+				Paths:                []string{},
+				Formats:              []string{"mbox", "maildir"},
+				Ignore:               []string{},
+				MaskSensitivePreview: true,
 			},
 			Browser: BrowserSourceConfig{
 				Enabled:        true,
@@ -179,6 +185,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	applyEnvOverrides(cfg)
+
 	return cfg, nil
 }
 
@@ -203,6 +211,10 @@ func (c *Config) Save() error {
 
 // ConfigDir returns the directory where config files are stored.
 func ConfigDir() (string, error) {
+	if dir := os.Getenv("MINDCLI_CONFIG_DIR"); dir != "" {
+		return expandUserPath(dir), nil
+	}
+
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
@@ -212,6 +224,10 @@ func ConfigDir() (string, error) {
 
 // ConfigPath returns the path to the main config file.
 func ConfigPath() (string, error) {
+	if path := os.Getenv("MINDCLI_CONFIG_PATH"); path != "" {
+		return expandUserPath(path), nil
+	}
+
 	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
@@ -221,10 +237,11 @@ func ConfigPath() (string, error) {
 
 // EnsureConfigDir creates the config directory if it doesn't exist.
 func EnsureConfigDir() error {
-	dir, err := ConfigDir()
+	configPath, err := ConfigPath()
 	if err != nil {
 		return err
 	}
+	dir := filepath.Dir(configPath)
 	return os.MkdirAll(dir, 0755)
 }
 
@@ -243,4 +260,126 @@ func (c *Config) DatabasePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dataDir, "mindcli.db"), nil
+}
+
+func applyEnvOverrides(cfg *Config) {
+	// Storage
+	setStringFromEnv("MINDCLI_STORAGE_PATH", &cfg.Storage.Path)
+
+	// Indexing
+	setIntFromEnv("MINDCLI_INDEXING_WORKERS", &cfg.Indexing.Workers)
+	setBoolFromEnv("MINDCLI_INDEXING_WATCH", &cfg.Indexing.Watch)
+
+	// Search
+	setFloat64FromEnv("MINDCLI_SEARCH_HYBRID_WEIGHT", &cfg.Search.HybridWeight)
+	setIntFromEnv("MINDCLI_SEARCH_RESULTS_LIMIT", &cfg.Search.ResultsLimit)
+
+	// Embeddings
+	setStringFromEnv("MINDCLI_EMBEDDINGS_PROVIDER", &cfg.Embeddings.Provider)
+	setStringFromEnv("MINDCLI_EMBEDDINGS_MODEL", &cfg.Embeddings.Model)
+	setStringFromEnv("MINDCLI_EMBEDDINGS_LLM_MODEL", &cfg.Embeddings.LLMModel)
+	setStringFromEnv("MINDCLI_EMBEDDINGS_OLLAMA_URL", &cfg.Embeddings.OllamaURL)
+	setStringFromEnv("MINDCLI_EMBEDDINGS_OPENAI_KEY", &cfg.Embeddings.OpenAIKey)
+
+	// Sources: markdown
+	setBoolFromEnv("MINDCLI_SOURCES_MARKDOWN_ENABLED", &cfg.Sources.Markdown.Enabled)
+	setCSVFromEnv("MINDCLI_SOURCES_MARKDOWN_PATHS", &cfg.Sources.Markdown.Paths)
+	setCSVFromEnv("MINDCLI_SOURCES_MARKDOWN_EXTENSIONS", &cfg.Sources.Markdown.Extensions)
+	setCSVFromEnv("MINDCLI_SOURCES_MARKDOWN_IGNORE", &cfg.Sources.Markdown.Ignore)
+
+	// Sources: pdf
+	setBoolFromEnv("MINDCLI_SOURCES_PDF_ENABLED", &cfg.Sources.PDF.Enabled)
+	setCSVFromEnv("MINDCLI_SOURCES_PDF_PATHS", &cfg.Sources.PDF.Paths)
+
+	// Sources: email
+	setBoolFromEnv("MINDCLI_SOURCES_EMAIL_ENABLED", &cfg.Sources.Email.Enabled)
+	setCSVFromEnv("MINDCLI_SOURCES_EMAIL_PATHS", &cfg.Sources.Email.Paths)
+	setCSVFromEnv("MINDCLI_SOURCES_EMAIL_FORMATS", &cfg.Sources.Email.Formats)
+	setCSVFromEnv("MINDCLI_SOURCES_EMAIL_IGNORE", &cfg.Sources.Email.Ignore)
+	setBoolFromEnv("MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW", &cfg.Sources.Email.MaskSensitivePreview)
+
+	// Sources: browser
+	setBoolFromEnv("MINDCLI_SOURCES_BROWSER_ENABLED", &cfg.Sources.Browser.Enabled)
+	setCSVFromEnv("MINDCLI_SOURCES_BROWSER_BROWSERS", &cfg.Sources.Browser.Browsers)
+	setBoolFromEnv("MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT", &cfg.Sources.Browser.IncludeContent)
+
+	// Sources: clipboard
+	setBoolFromEnv("MINDCLI_SOURCES_CLIPBOARD_ENABLED", &cfg.Sources.Clipboard.Enabled)
+	setIntFromEnv("MINDCLI_SOURCES_CLIPBOARD_RETENTION_DAYS", &cfg.Sources.Clipboard.RetentionDays)
+	setBoolFromEnv("MINDCLI_SOURCES_CLIPBOARD_SKIP_PASSWORDS", &cfg.Sources.Clipboard.SkipPasswords)
+}
+
+func setStringFromEnv(name string, dst *string) {
+	if val, ok := os.LookupEnv(name); ok && strings.TrimSpace(val) != "" {
+		*dst = strings.TrimSpace(val)
+	}
+}
+
+func setBoolFromEnv(name string, dst *bool) {
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(val))
+	if err == nil {
+		*dst = parsed
+	}
+}
+
+func setIntFromEnv(name string, dst *int) {
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(val))
+	if err == nil {
+		*dst = parsed
+	}
+}
+
+func setFloat64FromEnv(name string, dst *float64) {
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+	if err == nil {
+		*dst = parsed
+	}
+}
+
+func setCSVFromEnv(name string, dst *[]string) {
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	parts := strings.Split(val, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	*dst = values
+}
+
+func expandUserPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return home
+		}
+		return path
+	}
+
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+
+	return path
 }
