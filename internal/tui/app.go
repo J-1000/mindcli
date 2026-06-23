@@ -56,7 +56,8 @@ type Model struct {
 	collectInput textinput.Model
 	redactor     privacy.Redactor
 
-	highlights map[string][]string // matching snippets per document ID
+	highlights    map[string][]string // matching snippets per document ID
+	searchVersion int                 // increments per keystroke for debouncing
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
@@ -139,7 +140,7 @@ func (m Model) loadDocuments() tea.Cmd {
 
 // searchDocuments searches using hybrid search (BM25 + vector) when available.
 // It uses the query parser to extract intent, source filters, and time filters.
-func (m Model) searchDocuments(q string) tea.Cmd {
+func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		parsed := query.ParseQuery(q)
@@ -196,7 +197,7 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 		// Apply any parsed time filter (e.g. "last week").
 		docs = query.FilterDocumentsByTime(docs, parsed, time.Now())
 
-		return searchResultsMsg{docs: docs, highlights: highlights, parsed: parsed}
+		return searchResultsMsg{docs: docs, highlights: highlights, parsed: parsed, live: live}
 	}
 }
 
@@ -209,6 +210,12 @@ type searchResultsMsg struct {
 	docs       []*storage.Document
 	highlights map[string][]string
 	parsed     query.ParsedQuery
+	live       bool // from search-as-you-type (suppresses LLM streaming)
+}
+
+type searchDebounceMsg struct {
+	version int
+	query   string
 }
 
 type errMsg struct {
@@ -320,8 +327,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = status
 		m.statusIsErr = false
-		// Start streaming if intent is answer/summarize
-		if m.llm != nil && len(m.results) > 0 &&
+		// Start streaming if intent is answer/summarize (not for live,
+		// keystroke-driven searches — only when the user commits with Enter).
+		if !msg.live && m.llm != nil && len(m.results) > 0 &&
 			(msg.parsed.Intent == query.IntentAnswer || msg.parsed.Intent == query.IntentSummarize) {
 			m.showAnswer() // Shows "Thinking..."
 			return m, m.startStreaming(msg.parsed.Original, m.results)
@@ -360,6 +368,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updatePreviewContent()
 		return m, nil
 
+	case searchDebounceMsg:
+		// Only act on the latest keystroke and only while editing the search.
+		if msg.version != m.searchVersion || m.panel != PanelSearch {
+			return m, nil
+		}
+		if strings.TrimSpace(msg.query) == "" {
+			return m, m.loadDocuments()
+		}
+		return m, m.searchDocuments(msg.query, true)
+
 	case reindexDoneMsg:
 		m.indexing = false
 		if msg.err != nil {
@@ -388,7 +406,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if query == "" {
 			return m, m.loadDocuments()
 		}
-		return m, m.searchDocuments(query)
+		return m, m.searchDocuments(query, false)
 
 	case key.Matches(msg, m.keys.Down):
 		if len(m.results) > 0 {
@@ -400,7 +418,16 @@ func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(msg)
-	return m, cmd
+
+	// Search-as-you-type: schedule a debounced search keyed by version so only
+	// the latest keystroke triggers a query.
+	m.searchVersion++
+	v := m.searchVersion
+	q := m.searchInput.Value()
+	debounce := tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return searchDebounceMsg{version: v, query: q}
+	})
+	return m, tea.Batch(cmd, debounce)
 }
 
 func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -614,7 +641,7 @@ func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if strings.TrimSpace(col.Query) != "" {
 				m.browsingCollections = false
 				m.searchInput.SetValue(col.Query)
-				return m, m.searchDocuments(col.Query)
+				return m, m.searchDocuments(col.Query, false)
 			}
 			return m, func() tea.Msg {
 				ctx := context.Background()
