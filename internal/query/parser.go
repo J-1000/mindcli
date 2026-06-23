@@ -282,7 +282,7 @@ func buildRAGPrompt(question string, contexts []string) string {
 		contextStr.WriteString(fmt.Sprintf("--- Document %d ---\n%s\n\n", i+1, ctx))
 	}
 
-	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely.
+	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely. Cite the documents you rely on inline as [1], [2], etc., matching the document numbers below. If the documents do not contain the answer, say so.
 
 %s
 
