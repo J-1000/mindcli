@@ -136,6 +136,26 @@ func TestBuildRAGPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildRAGPromptWithHistory(t *testing.T) {
+	history := []ConversationTurn{
+		{Question: "What is Go?", Answer: "A programming language."},
+	}
+	prompt := buildRAGPromptWithHistory("Tell me more", []string{"Go is fast"}, history)
+	if !strings.Contains(prompt, "Conversation so far") {
+		t.Error("prompt should include conversation history header")
+	}
+	if !strings.Contains(prompt, "What is Go?") || !strings.Contains(prompt, "A programming language.") {
+		t.Error("prompt should include the prior question and answer")
+	}
+	if !strings.Contains(prompt, "Tell me more") {
+		t.Error("prompt should include the follow-up question")
+	}
+	// Without history there should be no conversation header.
+	if strings.Contains(buildRAGPrompt("q", []string{"ctx"}), "Conversation so far") {
+		t.Error("plain prompt should not include conversation header")
+	}
+}
+
 func TestBuildRAGPromptLimitsContexts(t *testing.T) {
 	contexts := make([]string, 10)
 	for i := range contexts {

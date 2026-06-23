@@ -272,8 +272,20 @@ func FilterDocumentsByTime(docs []*storage.Document, parsed ParsedQuery, now tim
 	return filtered
 }
 
+// ConversationTurn is a prior question/answer pair for follow-up context.
+type ConversationTurn struct {
+	Question string
+	Answer   string
+}
+
 // buildRAGPrompt constructs the prompt for RAG-style answer generation.
 func buildRAGPrompt(question string, contexts []string) string {
+	return buildRAGPromptWithHistory(question, contexts, nil)
+}
+
+// buildRAGPromptWithHistory is buildRAGPrompt with prior conversation turns
+// prepended so follow-up questions ("tell me more") retain context.
+func buildRAGPromptWithHistory(question string, contexts []string, history []ConversationTurn) string {
 	var contextStr strings.Builder
 	for i, ctx := range contexts {
 		if i >= 5 {
@@ -282,13 +294,21 @@ func buildRAGPrompt(question string, contexts []string) string {
 		contextStr.WriteString(fmt.Sprintf("--- Document %d ---\n%s\n\n", i+1, ctx))
 	}
 
+	var historyStr strings.Builder
+	for _, turn := range history {
+		historyStr.WriteString(fmt.Sprintf("Q: %s\nA: %s\n\n", turn.Question, turn.Answer))
+	}
+	conversation := ""
+	if historyStr.Len() > 0 {
+		conversation = "Conversation so far:\n" + historyStr.String() + "\n"
+	}
+
 	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely. Cite the documents you rely on inline as [1], [2], etc., matching the document numbers below. If the documents do not contain the answer, say so.
 
-%s
-
+%s%s
 Question: %s
 
-Answer:`, contextStr.String(), question)
+Answer:`, conversation, contextStr.String(), question)
 }
 
 // GenerateAnswer creates a RAG-style answer from search results using an LLM.
@@ -352,11 +372,17 @@ func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk f
 
 // GenerateAnswerStream builds the RAG prompt and streams the response.
 func (c *LLMClient) GenerateAnswerStream(ctx context.Context, question string, contexts []string, onChunk func(string, bool)) error {
+	return c.GenerateAnswerStreamWithHistory(ctx, question, contexts, nil, onChunk)
+}
+
+// GenerateAnswerStreamWithHistory streams an answer that takes prior
+// conversation turns into account (for follow-up questions).
+func (c *LLMClient) GenerateAnswerStreamWithHistory(ctx context.Context, question string, contexts []string, history []ConversationTurn, onChunk func(string, bool)) error {
 	if len(contexts) == 0 {
 		onChunk("No relevant documents found.", true)
 		return nil
 	}
-	return c.GenerateStream(ctx, buildRAGPrompt(question, contexts), onChunk)
+	return c.GenerateStream(ctx, buildRAGPromptWithHistory(question, contexts, history), onChunk)
 }
 
 // EstimateAnswerConfidence estimates answer confidence from question/context coverage.

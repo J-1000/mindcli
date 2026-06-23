@@ -73,6 +73,9 @@ type Model struct {
 	reindex  func(context.Context) (indexed int, errs int, err error)
 	indexing bool // true while an in-app index pass is running
 
+	currentQuestion string                   // question currently being answered
+	conversation    []query.ConversationTurn // recent Q&A turns for follow-ups
+
 	// Dimensions
 	width  int
 	height int
@@ -271,6 +274,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Clear search if in search mode with text
 			m.searchInput.SetValue("")
+			m.conversation = nil
 			return m, m.loadDocuments()
 
 		case key.Matches(msg, m.keys.Help):
@@ -288,6 +292,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Escape):
 			if m.panel == PanelSearch && m.searchInput.Value() != "" {
 				m.searchInput.SetValue("")
+				m.conversation = nil
 				return m, m.loadDocuments()
 			}
 			m.panel = PanelSearch
@@ -338,6 +343,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// keystroke-driven searches — only when the user commits with Enter).
 		if !msg.live && m.llm != nil && len(m.results) > 0 &&
 			(msg.parsed.Intent == query.IntentAnswer || msg.parsed.Intent == query.IntentSummarize) {
+			m.currentQuestion = msg.parsed.Original
 			m.showAnswer() // Shows "Thinking..."
 			return m, m.startStreaming(msg.parsed.Original, m.results)
 		}
@@ -347,6 +353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamChunkMsg:
 		if msg.done {
 			m.streaming = false
+			m.recordConversationTurn()
 			m.showAnswer()
 		} else {
 			m.answerText += msg.token
@@ -873,10 +880,11 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	m.streamCh = ch
 
 	contexts := buildAnswerContexts(docs)
+	history := m.conversation
 
 	go func() {
 		defer close(ch)
-		m.llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+		m.llm.GenerateAnswerStreamWithHistory(ctx, question, contexts, history, func(token string, done bool) {
 			select {
 			case ch <- streamChunkMsg{token: token, done: done}:
 			case <-ctx.Done():
@@ -885,6 +893,22 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	}()
 
 	return m.readNextChunk()
+}
+
+// recordConversationTurn appends the just-completed Q&A to the conversation
+// history (capped to the last few turns) so follow-up questions have context.
+func (m *Model) recordConversationTurn() {
+	if m.currentQuestion == "" || m.answerText == "" {
+		return
+	}
+	m.conversation = append(m.conversation, query.ConversationTurn{
+		Question: m.currentQuestion,
+		Answer:   m.answerText,
+	})
+	const maxTurns = 4
+	if len(m.conversation) > maxTurns {
+		m.conversation = m.conversation[len(m.conversation)-maxTurns:]
+	}
 }
 
 func (m *Model) answerContexts() []string {
