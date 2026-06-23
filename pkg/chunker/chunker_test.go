@@ -134,3 +134,19 @@ func TestChunkPositions(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkSplit(b *testing.B) {
+	// ~50 KB of text to chunk.
+	var sb strings.Builder
+	for i := 0; i < 1000; i++ {
+		sb.WriteString("The quick brown fox jumps over the lazy dog. ")
+	}
+	text := sb.String()
+	opts := DefaultOptions()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Split(text, opts)
+	}
+}
