@@ -93,10 +93,10 @@ Usage:
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
   mindcli export "..." Export search results (--format json|csv|markdown)
+  mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
   mindcli clipboard    Manage clipboard index (clear, cleanup)
   mindcli collection   Manage collections (create, delete, list, show, add, remove, rename)
-  mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli config       Initialize config file
   mindcli version      Show version info
   mindcli help         Show this help
@@ -139,68 +139,194 @@ func buildRedactor(cfg *config.Config) privacy.Redactor {
 	return redactor
 }
 
-func runTUI() error {
+// openOpts selects which subsystems openStores wires up.
+type openOpts struct {
+	vectors  bool // open/create the vector store
+	embedder bool // set up the embedder (cached)
+	llm      bool // set up the LLM client
+	hybrid   bool // build a hybrid searcher (needs vectors + embedder)
+	indexing bool // indexing mode: create vectors even if empty; test embedder connectivity
+}
+
+// stores holds the open handles shared across commands. Always includes the
+// config, data dir, database, and Bleve search index; optional members may be
+// nil depending on openOpts and availability (semantic search degrades
+// gracefully).
+type stores struct {
+	cfg      *config.Config
+	dataDir  string
+	db       *storage.DB
+	bleve    *search.BleveIndex
+	vectors  *storage.VectorStore
+	embedder embeddings.Embedder
+	cached   *embeddings.CachedEmbedder
+	llm      *query.LLMClient
+	hybrid   *query.HybridSearcher
+}
+
+// openStores opens the database and search index, then optionally wires up the
+// vector store, embedder, LLM client, and hybrid searcher. The caller must call
+// Close when done.
+func openStores(opts openOpts) (*stores, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// Ensure data directory exists
 	dataDir, err := cfg.DataDir()
 	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
+		return nil, fmt.Errorf("creating data directory: %w", err)
 	}
-
-	// Open database
 	dbPath, err := cfg.DatabasePath()
 	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
+		return nil, fmt.Errorf("getting database path: %w", err)
 	}
-
 	db, err := storage.Open(dbPath)
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return nil, fmt.Errorf("opening database: %w", err)
 	}
-	defer db.Close()
 
-	// Open search index
+	s := &stores{cfg: cfg, dataDir: dataDir, db: db}
+
 	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
+	bleve, err := search.NewBleveIndex(indexPath)
 	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
+		db.Close()
+		return nil, fmt.Errorf("opening search index: %w", err)
 	}
-	defer searchIndex.Close()
+	s.bleve = bleve
 
-	// Set up hybrid search (optional - degrades gracefully)
-	var hybrid *query.HybridSearcher
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	if _, err := os.Stat(vectorPath); err == nil {
-		// Vector store exists, try to load it.
-		vectors, err := storage.NewVectorStore(vectorPath)
-		if err == nil && vectors.Len() > 0 {
-			defer vectors.Close()
+	if opts.vectors {
+		s.openVectors(opts.indexing)
+	}
+	if opts.embedder {
+		s.openEmbedder(opts.indexing)
+	}
+	if opts.llm && cfg.Embeddings.Provider == "ollama" {
+		s.llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
+	}
+	if opts.hybrid && s.vectors != nil && s.embedder != nil && s.vectors.Len() > 0 {
+		s.hybrid = query.NewHybridSearcher(s.bleve, s.vectors, s.embedder, s.db, cfg.Search.HybridWeight)
+	}
 
-			ollamaEmb := embeddings.NewOllamaEmbedder(
-				cfg.Embeddings.OllamaURL,
-				cfg.Embeddings.Model,
-			)
-			cachePath := filepath.Join(dataDir, "embeddings.db")
-			cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
-			if err == nil {
-				defer cached.Close()
-				hybrid = query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
+	return s, nil
+}
+
+// openVectors loads the vector store. In indexing mode it is always created
+// (so embeddings can be added); otherwise it is only loaded when a non-empty
+// graph already exists on disk.
+func (s *stores) openVectors(indexing bool) {
+	vectorPath := filepath.Join(s.dataDir, "vectors.graph")
+	if indexing {
+		vs, err := storage.NewVectorStore(vectorPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
+			return
+		}
+		s.vectors = vs
+		return
+	}
+	if _, err := os.Stat(vectorPath); err != nil {
+		return
+	}
+	vs, err := storage.NewVectorStore(vectorPath)
+	if err != nil {
+		return
+	}
+	if vs.Len() == 0 {
+		vs.Close()
+		return
+	}
+	s.vectors = vs
+}
+
+// openEmbedder sets up the embedder for the configured provider. In indexing
+// mode it tests connectivity and disables embeddings if the backend is down.
+func (s *stores) openEmbedder(indexing bool) {
+	if s.cfg.Embeddings.Provider != "ollama" {
+		return
+	}
+	ollamaEmb := embeddings.NewOllamaEmbedder(s.cfg.Embeddings.OllamaURL, s.cfg.Embeddings.Model)
+	cachePath := filepath.Join(s.dataDir, "embeddings.db")
+	if cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
+		s.embedder = ollamaEmb
+	} else {
+		s.cached = cached
+		s.embedder = cached
+	}
+
+	if indexing {
+		if _, err := ollamaEmb.Embed(context.Background(), "test"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
+			s.embedder = nil
+		}
+	}
+}
+
+// Close releases all open handles.
+func (s *stores) Close() {
+	if s == nil {
+		return
+	}
+	if s.cached != nil {
+		s.cached.Close()
+	}
+	if s.vectors != nil {
+		s.vectors.Close()
+	}
+	if s.bleve != nil {
+		s.bleve.Close()
+	}
+	if s.db != nil {
+		s.db.Close()
+	}
+}
+
+// searchResults runs a parsed query through the hybrid searcher when available,
+// falling back to Bleve-only. It is the single search entry point shared by the
+// search, export, and ask commands.
+func searchResults(ctx context.Context, s *stores, parsed query.ParsedQuery, limit int) (storage.SearchResults, error) {
+	searchQ := parsed.SearchTerms
+	if parsed.SourceFilter != "" {
+		searchQ = searchQ + " source:" + parsed.SourceFilter
+	}
+
+	var results storage.SearchResults
+	if s.hybrid != nil {
+		r, err := s.hybrid.Search(ctx, searchQ, limit)
+		if err != nil {
+			return nil, err
+		}
+		results = r
+	} else {
+		bleveResults, err := s.bleve.Search(ctx, searchQ, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range bleveResults {
+			doc, err := s.db.GetDocument(ctx, r.ID)
+			if err == nil && doc != nil {
+				results = append(results, &storage.SearchResult{
+					Document:  doc,
+					Score:     r.Score,
+					BM25Score: r.Score,
+				})
 			}
 		}
 	}
 
-	// Set up LLM client (optional - for answer generation)
-	var llm *query.LLMClient
-	if cfg.Embeddings.Provider == "ollama" {
-		llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
-	}
+	return results, nil
+}
 
-	// Create and run the TUI
-	redactor := buildRedactor(cfg)
-	model := tui.New(db, searchIndex, hybrid, llm, redactor)
+func runTUI() error {
+	s, err := openStores(openOpts{vectors: true, embedder: true, llm: true, hybrid: true})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	redactor := buildRedactor(s.cfg)
+	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -211,86 +337,26 @@ func runTUI() error {
 }
 
 func runIndex(pathsOverride string, watch bool) error {
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true, embedder: true, indexing: true})
 	if err != nil {
 		return err
 	}
+	defer s.Close()
 
-	// Override paths if provided
+	// Override paths if provided.
 	if pathsOverride != "" {
-		cfg.Sources.Markdown.Paths = parsePathsOverride(pathsOverride)
+		s.cfg.Sources.Markdown.Paths = parsePathsOverride(pathsOverride)
 	}
 
-	// Ensure data directory exists
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	// Open database
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
-	// Open search index
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
-	}
-	defer searchIndex.Close()
-
-	// Set up vector store and embedder (optional - fails gracefully)
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	vectors, err := storage.NewVectorStore(vectorPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
-		vectors = nil
-	}
-	if vectors != nil {
-		defer vectors.Close()
-	}
-
-	var embedder embeddings.Embedder
-	if cfg.Embeddings.Provider == "ollama" {
-		ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
-		cachePath := filepath.Join(dataDir, "embeddings.db")
-		cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
-			embedder = ollamaEmb
-		} else {
-			defer cached.Close()
-			embedder = cached
-		}
-
-		// Test connectivity by checking if Ollama is reachable.
-		ctx := context.Background()
-		if _, err := ollamaEmb.Embed(ctx, "test"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
-			embedder = nil
-		}
-	}
-
-	// Create indexer
-	indexer := index.NewIndexer(db, searchIndex, vectors, embedder, cfg)
+	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
 	indexer.SetProgressReporter(&consoleProgressReporter{})
 
-	// Run indexing
 	ctx := context.Background()
 	stats, err := indexer.IndexAll(ctx)
 	if err != nil {
 		return fmt.Errorf("indexing: %w", err)
 	}
 
-	// Save vector index to disk.
 	if err := indexer.SaveVectors(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: saving vectors: %v\n", err)
 	}
@@ -299,13 +365,12 @@ func runIndex(pathsOverride string, watch bool) error {
 	fmt.Printf("  Total files:   %d\n", stats.TotalFiles)
 	fmt.Printf("  Indexed:       %d\n", stats.IndexedFiles)
 	fmt.Printf("  Errors:        %d\n", stats.Errors)
-	if embedder != nil && vectors != nil {
-		fmt.Printf("  Vectors:       %d\n", vectors.Len())
+	if s.embedder != nil && s.vectors != nil {
+		fmt.Printf("  Vectors:       %d\n", s.vectors.Len())
 	}
 
-	// Start file watching if requested.
 	if watch {
-		return startWatching(indexer, cfg)
+		return startWatching(indexer, s.cfg)
 	}
 
 	return nil
@@ -325,67 +390,14 @@ func parsePathsOverride(pathsOverride string) []string {
 }
 
 func runWatch() error {
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true, embedder: true, indexing: true})
 	if err != nil {
 		return err
 	}
+	defer s.Close()
 
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return err
-	}
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return err
-	}
-	defer searchIndex.Close()
-
-	// Set up vector store and embedder (optional - fails gracefully).
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	vectors, err := storage.NewVectorStore(vectorPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
-		vectors = nil
-	}
-	if vectors != nil {
-		defer vectors.Close()
-	}
-
-	var embedder embeddings.Embedder
-	if cfg.Embeddings.Provider == "ollama" {
-		ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
-		cachePath := filepath.Join(dataDir, "embeddings.db")
-		cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
-			embedder = ollamaEmb
-		} else {
-			defer cached.Close()
-			embedder = cached
-		}
-
-		// Test connectivity by checking if Ollama is reachable.
-		ctx := context.Background()
-		if _, err := ollamaEmb.Embed(ctx, "test"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
-			embedder = nil
-		}
-	}
-
-	indexer := index.NewIndexer(db, searchIndex, vectors, embedder, cfg)
-	return startWatching(indexer, cfg)
+	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
+	return startWatching(indexer, s.cfg)
 }
 
 func startWatching(indexer *index.Indexer, cfg *config.Config) error {
@@ -427,42 +439,15 @@ func startWatching(indexer *index.Indexer, cfg *config.Config) error {
 }
 
 func runSearch(queryStr string) error {
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true, embedder: true, hybrid: true})
 	if err != nil {
 		return err
 	}
-
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
-	}
-	defer searchIndex.Close()
+	defer s.Close()
 
 	parsed := query.ParseQuery(queryStr)
-	searchQ := parsed.SearchTerms
-	if parsed.SourceFilter != "" {
-		searchQ = searchQ + " source:" + parsed.SourceFilter
-	}
-
 	ctx := context.Background()
-	results, err := searchIndex.Search(ctx, searchQ, 20)
+	results, err := searchResults(ctx, s, parsed, s.cfg.Search.ResultsLimit)
 	if err != nil {
 		return fmt.Errorf("searching: %w", err)
 	}
@@ -472,12 +457,9 @@ func runSearch(queryStr string) error {
 		return nil
 	}
 
-	redactor := buildRedactor(cfg)
+	redactor := buildRedactor(s.cfg)
 	for i, r := range results {
-		doc, err := db.GetDocument(ctx, r.ID)
-		if err != nil || doc == nil {
-			continue
-		}
+		doc := r.Document
 		preview := doc.Preview
 		if preview == "" && len(doc.Content) > 100 {
 			preview = doc.Content[:100] + "..."
@@ -510,86 +492,23 @@ func runExport(args []string) error {
 		return fmt.Errorf("unsupported format %q: use json, csv, or markdown", *format)
 	}
 
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true, embedder: true, hybrid: true})
 	if err != nil {
 		return err
 	}
-
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
-	}
-	defer searchIndex.Close()
+	defer s.Close()
 
 	parsed := query.ParseQuery(queryStr)
-	searchQ := parsed.SearchTerms
-	if parsed.SourceFilter != "" {
-		searchQ = searchQ + " source:" + parsed.SourceFilter
-	}
-
 	ctx := context.Background()
-	var results storage.SearchResults
-
-	// Try hybrid search first.
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	if _, statErr := os.Stat(vectorPath); statErr == nil {
-		vectors, vErr := storage.NewVectorStore(vectorPath)
-		if vErr == nil && vectors.Len() > 0 {
-			defer vectors.Close()
-			ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
-			cachePath := filepath.Join(dataDir, "embeddings.db")
-			cached, cErr := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
-			if cErr == nil {
-				defer cached.Close()
-				hybrid := query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
-				hybridResults, hErr := hybrid.Search(ctx, searchQ, *limit)
-				if hErr == nil {
-					results = hybridResults
-				}
-			}
-		}
+	results, err := searchResults(ctx, s, parsed, *limit)
+	if err != nil {
+		return fmt.Errorf("searching: %w", err)
 	}
-
-	// Fallback to Bleve search.
-	if len(results) == 0 {
-		bleveResults, err := searchIndex.Search(ctx, searchQ, *limit)
-		if err != nil {
-			return fmt.Errorf("searching: %w", err)
-		}
-		for _, r := range bleveResults {
-			doc, err := db.GetDocument(ctx, r.ID)
-			if err == nil && doc != nil {
-				results = append(results, &storage.SearchResult{
-					Document:  doc,
-					Score:     r.Score,
-					BM25Score: r.Score,
-				})
-			}
-		}
-	}
-
 	if len(results) == 0 {
 		return fmt.Errorf("no results found for %q", queryStr)
 	}
 
-	redactor := buildRedactor(cfg)
+	redactor := buildRedactor(s.cfg)
 
 	// Determine output writer.
 	var w io.Writer = os.Stdout
@@ -618,22 +537,12 @@ func runTag(args []string) error {
 		return fmt.Errorf("usage: mindcli tag <add|remove|list> [args...]")
 	}
 
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{})
 	if err != nil {
 		return err
 	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
+	defer s.Close()
+	db := s.db
 	ctx := context.Background()
 
 	switch args[0] {
@@ -710,22 +619,12 @@ func runCollection(args []string) error {
 		return fmt.Errorf("usage: mindcli collection <create|delete|list|show|add|remove|rename> [args...]")
 	}
 
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{})
 	if err != nil {
 		return err
 	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
+	defer s.Close()
+	db := s.db
 	ctx := context.Background()
 
 	switch args[0] {
@@ -855,53 +754,21 @@ func runClipboard(args []string) error {
 		return fmt.Errorf("usage: mindcli clipboard <clear|cleanup>")
 	}
 
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true})
 	if err != nil {
 		return err
 	}
-
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
-	}
-	defer searchIndex.Close()
-
-	// Vector store is optional for clipboard management.
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	var vectors *storage.VectorStore
-	if _, err := os.Stat(vectorPath); err == nil {
-		if vs, err := storage.NewVectorStore(vectorPath); err == nil {
-			vectors = vs
-			defer vectors.Close()
-		}
-	}
+	defer s.Close()
 
 	ctx := context.Background()
-	docs, err := db.ListDocuments(ctx, storage.SourceClipboard)
+	docs, err := s.db.ListDocuments(ctx, storage.SourceClipboard)
 	if err != nil {
 		return fmt.Errorf("listing clipboard documents: %w", err)
 	}
 
 	switch args[0] {
 	case "clear":
-		removed, err := purgeClipboardDocuments(ctx, db, searchIndex, vectors, docs, func(*storage.Document) bool { return true })
+		removed, err := purgeClipboardDocuments(ctx, s.db, s.bleve, s.vectors, docs, func(*storage.Document) bool { return true })
 		if err != nil {
 			return err
 		}
@@ -909,8 +776,8 @@ func runClipboard(args []string) error {
 		return nil
 
 	case "cleanup":
-		cutoff := time.Now().AddDate(0, 0, -cfg.Sources.Clipboard.RetentionDays)
-		removed, err := purgeClipboardDocuments(ctx, db, searchIndex, vectors, docs, func(doc *storage.Document) bool {
+		cutoff := time.Now().AddDate(0, 0, -s.cfg.Sources.Clipboard.RetentionDays)
+		removed, err := purgeClipboardDocuments(ctx, s.db, s.bleve, s.vectors, docs, func(doc *storage.Document) bool {
 			return doc.ModifiedAt.Before(cutoff)
 		})
 		if err != nil {
@@ -958,78 +825,22 @@ func purgeClipboardDocuments(
 }
 
 func runAsk(question string) error {
-	cfg, err := loadConfig()
+	s, err := openStores(openOpts{vectors: true, embedder: true, llm: true, hybrid: true})
 	if err != nil {
 		return err
 	}
+	defer s.Close()
 
-	dataDir, err := cfg.DataDir()
-	if err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	dbPath, err := cfg.DatabasePath()
-	if err != nil {
-		return fmt.Errorf("getting database path: %w", err)
-	}
-
-	db, err := storage.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer db.Close()
-
-	indexPath := filepath.Join(dataDir, "search.bleve")
-	searchIndex, err := search.NewBleveIndex(indexPath)
-	if err != nil {
-		return fmt.Errorf("opening search index: %w", err)
-	}
-	defer searchIndex.Close()
-
-	// Parse the query for search terms and source filters.
 	parsed := query.ParseQuery(question)
-	searchQ := parsed.SearchTerms
-	if parsed.SourceFilter != "" {
-		searchQ = searchQ + " source:" + parsed.SourceFilter
-	}
-
-	// Set up hybrid search if available.
 	ctx := context.Background()
-	var docs []*storage.Document
-
-	vectorPath := filepath.Join(dataDir, "vectors.graph")
-	if _, err := os.Stat(vectorPath); err == nil {
-		vectors, err := storage.NewVectorStore(vectorPath)
-		if err == nil && vectors.Len() > 0 {
-			defer vectors.Close()
-			ollamaEmb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
-			cachePath := filepath.Join(dataDir, "embeddings.db")
-			cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath)
-			if err == nil {
-				defer cached.Close()
-				hybrid := query.NewHybridSearcher(searchIndex, vectors, cached, db, cfg.Search.HybridWeight)
-				results, err := hybrid.Search(ctx, searchQ, 10)
-				if err == nil {
-					for _, r := range results {
-						docs = append(docs, r.Document)
-					}
-				}
-			}
-		}
+	results, err := searchResults(ctx, s, parsed, 10)
+	if err != nil {
+		return fmt.Errorf("searching: %w", err)
 	}
 
-	// Fallback to Bleve search if hybrid didn't produce results.
-	if len(docs) == 0 {
-		results, err := searchIndex.Search(ctx, searchQ, 10)
-		if err != nil {
-			return fmt.Errorf("searching: %w", err)
-		}
-		for _, r := range results {
-			doc, err := db.GetDocument(ctx, r.ID)
-			if err == nil && doc != nil {
-				docs = append(docs, doc)
-			}
-		}
+	docs := make([]*storage.Document, 0, len(results))
+	for _, r := range results {
+		docs = append(docs, r.Document)
 	}
 
 	if len(docs) == 0 {
@@ -1051,11 +862,16 @@ func runAsk(question string) error {
 	}
 	conf := query.EstimateAnswerConfidence(question, contexts)
 
-	// Generate answer via Ollama with streaming.
-	llm := query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
-	redactor := buildRedactor(cfg)
+	if s.llm == nil {
+		fmt.Printf("(LLM unavailable, showing top results for: %s)\n\n", parsed.SearchTerms)
+		printAskSources(docs)
+		return nil
+	}
+
+	// Generate answer via the LLM with streaming.
+	redactor := buildRedactor(s.cfg)
 	var answerBuilder strings.Builder
-	err = llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+	err = s.llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
 		if redactor.Enabled() {
 			if done {
 				fmt.Print(redactor.Redact(answerBuilder.String()))
@@ -1067,27 +883,26 @@ func runAsk(question string) error {
 		fmt.Print(token)
 	})
 	if err != nil {
-		// If LLM fails, show search results instead.
-		fmt.Printf("(Ollama unavailable, showing top results for: %s)\n\n", parsed.SearchTerms)
-		for i, doc := range docs {
-			if i >= 5 {
-				break
-			}
-			fmt.Printf("%d. %s\n   %s [%s]\n", i+1, doc.Title, doc.Path, doc.Source)
-		}
+		// If the LLM fails, show search results instead.
+		fmt.Printf("(LLM unavailable, showing top results for: %s)\n\n", parsed.SearchTerms)
+		printAskSources(docs)
 		return nil
 	}
 
 	fmt.Printf("\nConfidence: %s (%.2f)\n", strings.ToUpper(conf.Level), conf.Score)
 	fmt.Printf("\n\nSources:\n")
+	printAskSources(docs)
+
+	return nil
+}
+
+func printAskSources(docs []*storage.Document) {
 	for i, doc := range docs {
 		if i >= 5 {
 			break
 		}
 		fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
 	}
-
-	return nil
 }
 
 func runConfigInit() error {
