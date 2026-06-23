@@ -247,7 +247,7 @@ func (s *stores) openEmbedder(indexing bool) {
 	}
 	ollamaEmb := embeddings.NewOllamaEmbedder(s.cfg.Embeddings.OllamaURL, s.cfg.Embeddings.Model)
 	cachePath := filepath.Join(s.dataDir, "embeddings.db")
-	if cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath); err != nil {
+	if cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath, s.cfg.Embeddings.Model); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
 		s.embedder = ollamaEmb
 	} else {
