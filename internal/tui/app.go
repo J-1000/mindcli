@@ -61,6 +61,7 @@ type Model struct {
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
+	collectionCounts    map[string]int        // doc count per collection ID
 	collectionCursor    int                   // cursor in collections list
 	prevResults         []*storage.Document   // saved results before browsing
 	streaming           bool                  // true while streaming LLM answer
@@ -224,6 +225,7 @@ type errMsg struct {
 
 type collectionsLoadedMsg struct {
 	collections []*storage.Collection
+	counts      map[string]int
 }
 
 type collectionDocsLoadedMsg struct {
@@ -350,6 +352,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case collectionsLoadedMsg:
 		m.collections = msg.collections
+		m.collectionCounts = msg.counts
 		m.collectionCursor = 0
 		if len(msg.collections) == 0 {
 			m.statusMsg = "No collections found"
@@ -538,7 +541,11 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if err != nil {
 				return errMsg{err}
 			}
-			return collectionsLoadedMsg{cols}
+			counts := make(map[string]int, len(cols))
+			for _, c := range cols {
+				counts[c.ID], _ = m.db.CountCollectionDocuments(ctx, c.ID)
+			}
+			return collectionsLoadedMsg{collections: cols, counts: counts}
 		}
 
 	case key.Matches(msg, m.keys.Collection):
@@ -1096,8 +1103,7 @@ func (m Model) renderCollectionsList(width, height int) string {
 
 	for i := start; i < end; i++ {
 		col := m.collections[i]
-		count, _ := m.db.CountCollectionDocuments(context.Background(), col.ID)
-		label := fmt.Sprintf("%s (%d docs)", col.Name, count)
+		label := fmt.Sprintf("%s (%d docs)", col.Name, m.collectionCounts[col.ID])
 		if len(label) > width-4 {
 			label = label[:width-7] + "..."
 		}
