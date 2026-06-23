@@ -1031,7 +1031,7 @@ func (m Model) renderStatusBar() string {
 		styles.HelpDescStyle.Render(" quit")
 
 	return styles.StatusBarStyle.Render(
-		status + strings.Repeat(" ", max(0, m.width-len(m.statusMsg)-len(" help • q quit")-10)) + help,
+		status + strings.Repeat(" ", max(0, m.width-lipgloss.Width(m.statusMsg)-lipgloss.Width(" help • q quit")-10)) + help,
 	)
 }
 
