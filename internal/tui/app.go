@@ -389,6 +389,22 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, m.keys.PageDown):
+		m.moveCursor(m.pageStep())
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageUp):
+		m.moveCursor(-m.pageStep())
+		return m, nil
+
+	case key.Matches(msg, m.keys.HalfDown):
+		m.moveCursor(m.pageStep() / 2)
+		return m, nil
+
+	case key.Matches(msg, m.keys.HalfUp):
+		m.moveCursor(-m.pageStep() / 2)
+		return m, nil
+
 	case key.Matches(msg, m.keys.Enter):
 		m.panel = PanelPreview
 		return m, nil
@@ -650,6 +666,32 @@ func (m *Model) updateFocus() {
 	} else {
 		m.searchInput.Blur()
 	}
+}
+
+// pageStep returns the number of result rows that make up one page,
+// derived from the visible results height (each row is ~2 lines).
+func (m Model) pageStep() int {
+	step := (m.height - 8) / 2
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
+// moveCursor moves the results cursor by delta, clamping to range, and
+// refreshes the preview.
+func (m *Model) moveCursor(delta int) {
+	if len(m.results) == 0 {
+		return
+	}
+	m.cursor += delta
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor > len(m.results)-1 {
+		m.cursor = len(m.results) - 1
+	}
+	m.updatePreviewContent()
 }
 
 func (m *Model) updateViewportSize() {
