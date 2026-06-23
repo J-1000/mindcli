@@ -662,7 +662,8 @@ func runCollection(args []string) error {
 		return fmt.Errorf("usage: mindcli collection <create|delete|list|show|add|remove|rename> [args...]")
 	}
 
-	s, err := openStores(openOpts{})
+	// Open search subsystems too so "show" can execute saved queries.
+	s, err := openStores(openOpts{vectors: true, embedder: true, hybrid: true})
 	if err != nil {
 		return err
 	}
@@ -736,6 +737,18 @@ func runCollection(args []string) error {
 		docs, _ := db.GetCollectionDocuments(ctx, col.ID)
 		for i, doc := range docs {
 			fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
+		}
+
+		// Smart collection: also show documents matching the saved query.
+		if strings.TrimSpace(col.Query) != "" {
+			parsed := query.ParseQuery(col.Query)
+			results, qErr := searchResults(ctx, s, parsed, s.cfg.Search.ResultsLimit)
+			if qErr == nil && len(results) > 0 {
+				fmt.Printf("\nMatching saved query %q:\n", col.Query)
+				for i, r := range results {
+					fmt.Printf("  %d. %s (%s)\n", i+1, r.Document.Title, r.Document.Path)
+				}
+			}
 		}
 
 	case "add":

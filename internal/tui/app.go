@@ -557,6 +557,12 @@ func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Enter):
 		if m.collectionCursor < len(m.collections) {
 			col := m.collections[m.collectionCursor]
+			// Smart collection: run the saved query instead of listing members.
+			if strings.TrimSpace(col.Query) != "" {
+				m.browsingCollections = false
+				m.searchInput.SetValue(col.Query)
+				return m, m.searchDocuments(col.Query)
+			}
 			return m, func() tea.Msg {
 				ctx := context.Background()
 				docs, err := m.db.GetCollectionDocuments(ctx, col.ID)
