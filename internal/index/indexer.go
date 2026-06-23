@@ -426,6 +426,44 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) er
 	return nil
 }
 
+// Prune removes indexed documents whose backing file no longer exists. Only
+// filesystem-backed sources (markdown, pdf, email) are considered; browser and
+// clipboard entries are not file-backed and are left untouched. Callers should
+// SaveVectors afterwards to persist vector removals.
+func (idx *Indexer) Prune(ctx context.Context) (int, error) {
+	docs, err := idx.db.ListDocuments(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, doc := range docs {
+		if !isFileBackedSource(doc.Source) {
+			continue
+		}
+		if _, err := os.Stat(doc.Path); !os.IsNotExist(err) {
+			continue
+		}
+		if err := idx.RemoveFile(ctx, doc.Path); err != nil {
+			if idx.progress != nil {
+				idx.progress.OnError(string(doc.Source), doc.Path, err)
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func isFileBackedSource(s storage.Source) bool {
+	switch s {
+	case storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail:
+		return true
+	default:
+		return false
+	}
+}
+
 func (idx *Indexer) deleteDocumentVectors(ctx context.Context, docID string) error {
 	if idx.vectors == nil {
 		return nil

@@ -75,6 +75,8 @@ func run() error {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
 			}
 			return runAsk(strings.Join(os.Args[2:], " "))
+		case "clean":
+			return runClean()
 		case "config":
 			return runConfigInit()
 		case "version", "-v", "--version":
@@ -104,6 +106,7 @@ Usage:
   mindcli tag ...      Manage document tags (add, remove, list)
   mindcli clipboard    Manage clipboard index (clear, cleanup)
   mindcli collection   Manage collections (create, delete, list, show, add, remove, rename)
+  mindcli clean        Remove documents whose files no longer exist
   mindcli config       Initialize config file
   mindcli version      Show version info
   mindcli help         Show this help
@@ -922,6 +925,25 @@ func printAskSources(docs []*storage.Document) {
 		}
 		fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
 	}
+}
+
+func runClean() error {
+	s, err := openStores(openOpts{vectors: true})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
+	removed, err := indexer.Prune(context.Background())
+	if err != nil {
+		return fmt.Errorf("pruning: %w", err)
+	}
+	if err := indexer.SaveVectors(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: saving vectors: %v\n", err)
+	}
+	fmt.Printf("Removed %d documents whose files no longer exist.\n", removed)
+	return nil
 }
 
 func runConfigInit() error {
