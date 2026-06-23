@@ -56,6 +56,8 @@ type Model struct {
 	collectInput textinput.Model
 	redactor     privacy.Redactor
 
+	highlights map[string][]string // matching snippets per document ID
+
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
 	collectionCursor    int                   // cursor in collections list
@@ -149,6 +151,7 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 		}
 
 		var docs []*storage.Document
+		highlights := make(map[string][]string)
 
 		// Use hybrid search if available
 		if m.hybrid != nil {
@@ -159,6 +162,9 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 			docs = make([]*storage.Document, 0, len(results))
 			for _, r := range results {
 				docs = append(docs, r.Document)
+				if len(r.Highlights) > 0 {
+					highlights[r.Document.ID] = r.Highlights
+				}
 			}
 		} else if m.search != nil {
 			// Use Bleve, fall back to SQLite LIKE search
@@ -174,6 +180,9 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 					continue
 				}
 				docs = append(docs, doc)
+				for _, frags := range r.Highlights {
+					highlights[doc.ID] = append(highlights[doc.ID], frags...)
+				}
 			}
 		} else {
 			// Fallback to simple SQLite search
@@ -187,7 +196,7 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 		// Apply any parsed time filter (e.g. "last week").
 		docs = query.FilterDocumentsByTime(docs, parsed, time.Now())
 
-		return searchResultsMsg{docs: docs, parsed: parsed}
+		return searchResultsMsg{docs: docs, highlights: highlights, parsed: parsed}
 	}
 }
 
@@ -197,8 +206,9 @@ type docsLoadedMsg struct {
 }
 
 type searchResultsMsg struct {
-	docs   []*storage.Document
-	parsed query.ParsedQuery
+	docs       []*storage.Document
+	highlights map[string][]string
+	parsed     query.ParsedQuery
 }
 
 type errMsg struct {
@@ -289,6 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case docsLoadedMsg:
 		m.results = msg.docs
+		m.highlights = nil
 		m.cursor = 0
 		m.statusMsg = fmt.Sprintf("%d documents", len(m.results))
 		m.statusIsErr = false
@@ -297,6 +308,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.results = msg.docs
+		m.highlights = msg.highlights
 		m.cursor = 0
 		m.answerText = ""
 		status := fmt.Sprintf("%d results", len(m.results))
@@ -674,6 +686,13 @@ func (m Model) updateCollectInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+// stripHighlightTags removes Bleve's HTML highlight markers from a fragment.
+func stripHighlightTags(s string) string {
+	s = strings.ReplaceAll(s, "<mark>", "")
+	s = strings.ReplaceAll(s, "</mark>", "")
+	return s
+}
+
 // openFile opens a file with the system's default application.
 func openFile(path string) {
 	var cmd *exec.Cmd
@@ -873,6 +892,21 @@ func (m *Model) updatePreviewContent() {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+
+	// Show matching snippets (from search highlights) above the content.
+	if frags := m.highlights[doc.ID]; len(frags) > 0 {
+		sb.WriteString(styles.ResultSourceStyle.Render("Matches:"))
+		sb.WriteString("\n")
+		for i, frag := range frags {
+			if i >= 3 {
+				break
+			}
+			snippet := m.redactor.Redact(stripHighlightTags(frag))
+			sb.WriteString(styles.PreviewContentStyle.Render("… " + strings.TrimSpace(snippet) + " …"))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
 
 	content := doc.Content
 	if len(content) > 2000 {
