@@ -58,6 +58,7 @@ type Model struct {
 
 	highlights    map[string][]string // matching snippets per document ID
 	searchVersion int                 // increments per keystroke for debouncing
+	sourceFilter  storage.Source      // active source filter ("" = all sources)
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
@@ -129,9 +130,10 @@ func (m Model) Init() tea.Cmd {
 
 // loadDocuments loads documents from the database.
 func (m Model) loadDocuments() tea.Cmd {
+	source := m.sourceFilter
 	return func() tea.Msg {
 		ctx := context.Background()
-		docs, err := m.db.ListDocuments(ctx, "")
+		docs, err := m.db.ListDocuments(ctx, source)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -146,10 +148,13 @@ func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 		ctx := context.Background()
 		parsed := query.ParseQuery(q)
 
-		// Build search query with source filter if detected.
+		// Build search query with source filter (from the NL query, or the
+		// active filter toggled with 'f').
 		searchQ := parsed.SearchTerms
 		if parsed.SourceFilter != "" {
 			searchQ = searchQ + " source:" + parsed.SourceFilter
+		} else if m.sourceFilter != "" {
+			searchQ = searchQ + " source:" + string(m.sourceFilter)
 		}
 
 		var docs []*storage.Document
@@ -571,9 +576,31 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, m.startReindex()
 		}
 		return m, nil
+
+	case key.Matches(msg, m.keys.Filter):
+		m.sourceFilter = nextSourceFilter(m.sourceFilter)
+		if q := strings.TrimSpace(m.searchInput.Value()); q != "" {
+			return m, m.searchDocuments(q, false)
+		}
+		return m, m.loadDocuments()
 	}
 
 	return m, nil
+}
+
+// sourceFilterCycle is the order the 'f' key rotates through ("" = all).
+var sourceFilterCycle = []storage.Source{
+	"", storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail,
+	storage.SourceBrowser, storage.SourceClipboard,
+}
+
+func nextSourceFilter(current storage.Source) storage.Source {
+	for i, s := range sourceFilterCycle {
+		if s == current {
+			return sourceFilterCycle[(i+1)%len(sourceFilterCycle)]
+		}
+	}
+	return ""
 }
 
 // startReindex runs a full index pass in the background and reports completion.
@@ -1138,11 +1165,16 @@ func (m Model) renderStatusBar() string {
 		)
 	}
 
+	statusText := m.statusMsg
+	if m.sourceFilter != "" {
+		statusText = fmt.Sprintf("[%s] %s", m.sourceFilter, statusText)
+	}
+
 	var status string
 	if m.statusIsErr {
-		status = styles.StatusErrorStyle.Render(m.statusMsg)
+		status = styles.StatusErrorStyle.Render(statusText)
 	} else {
-		status = styles.StatusValueStyle.Render(m.statusMsg)
+		status = styles.StatusValueStyle.Render(statusText)
 	}
 
 	help := styles.HelpKeyStyle.Render("?") +
@@ -1152,7 +1184,7 @@ func (m Model) renderStatusBar() string {
 		styles.HelpDescStyle.Render(" quit")
 
 	return styles.StatusBarStyle.Render(
-		status + strings.Repeat(" ", max(0, m.width-lipgloss.Width(m.statusMsg)-lipgloss.Width(" help • q quit")-10)) + help,
+		status + strings.Repeat(" ", max(0, m.width-lipgloss.Width(statusText)-lipgloss.Width(" help • q quit")-10)) + help,
 	)
 }
 
@@ -1175,6 +1207,7 @@ func (m Model) renderHelp() string {
 		{"y", "Copy path to clipboard"},
 		{"r", "Refresh list"},
 		{"i", "Index sources now"},
+		{"f", "Cycle source filter"},
 		{"t", "Add tag"},
 		{"c", "Add to collection"},
 		{"C", "Browse collections"},

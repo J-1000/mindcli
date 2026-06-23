@@ -96,6 +96,7 @@ mindcli help                                 # Show help
 | `y` | Copy file path to clipboard |
 | `r` | Refresh document list |
 | `i` | Index sources now (in-app) |
+| `f` | Cycle source filter (all → markdown → pdf → …) |
 | `t` | Add tag to selected document |
 | `c` | Add to collection |
 | `C` | Browse collections |

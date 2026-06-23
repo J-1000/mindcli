@@ -75,6 +75,17 @@ func TestReindexDoneUpdatesStatus(t *testing.T) {
 	}
 }
 
+func TestNextSourceFilter(t *testing.T) {
+	got := nextSourceFilter("")
+	if got != storage.SourceMarkdown {
+		t.Errorf("after all, got %q, want markdown", got)
+	}
+	// Cycling from the last source wraps back to all.
+	if got := nextSourceFilter(storage.SourceClipboard); got != "" {
+		t.Errorf("after clipboard, got %q, want \"\" (all)", got)
+	}
+}
+
 func TestModelInit(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
