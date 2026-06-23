@@ -144,6 +144,7 @@ func TestScanner_Cancellation(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	filesChan, _ := scanner.Scan(ctx)
 
 	// Cancel after first file
