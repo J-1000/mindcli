@@ -460,12 +460,14 @@ func buildEmailDocument(file FileInfo, messages []emailMessage, maskSensitivePre
 		metadata["attachments"] = strings.Join(names, ", ")
 	}
 
-	preview := generatePreview(content, 500)
+	// When masking is enabled, mask the full body too — not just the preview —
+	// so sensitive data (addresses, tokens) is not stored in the index.
 	if maskSensitivePreview {
-		preview = maskSensitiveText(preview)
+		content = maskSensitiveText(content)
 		metadata["from"] = maskEmailMetadata(metadata["from"])
 		metadata["to"] = maskEmailMetadata(metadata["to"])
 	}
+	preview := generatePreview(content, 500)
 
 	return &storage.Document{
 		ID:          hashPath(file.Path),
