@@ -8,7 +8,8 @@ Search across your notes, PDFs, emails, browser history, and clipboard — all f
 
 - **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), browser history (Chrome/Firefox/Safari), clipboard
 - **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
-- **Local AI** — Embeddings and streaming LLM answers via Ollama (no API keys, no cloud)
+- **Local AI** — Embeddings and streaming LLM answers via Ollama (no API keys, no cloud), with optional OpenAI provider
+- **Conversational follow-ups** — Ask a question, then follow up ("tell me more") with prior turns kept in context
 - **Beautiful TUI** — Three-panel Bubble Tea interface with live preview and real-time streaming
 - **Export** — Search results to JSON, CSV, or Markdown
 - **Tagging** — Manual tags on any document, displayed in TUI and searchable
@@ -206,7 +207,9 @@ MindCLI uses a hybrid search approach:
 
 Natural language queries like `"what did I write about Go in my notes last week"` are parsed to filter by source and time automatically.
 
-When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results with a confidence indicator (low/medium/high) based on source coverage and query overlap. When Ollama is not available, search gracefully falls back to BM25-only mode.
+When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results with inline `[n]` citations and a confidence indicator (low/medium/high) based on source coverage and query overlap. When Ollama is not available, search gracefully falls back to BM25-only mode.
+
+Follow-up questions in the TUI keep recent Q&A turns in context, so asking "tell me more" or "what about the second one?" works as a conversation. The history resets when you clear the search.
 
 ## Performance
 
