@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jankowtf/mindcli/internal/storage"
 )
 
 // QueryIntent represents what the user wants to do.
@@ -163,6 +165,87 @@ func ParseQuery(query string) ParsedQuery {
 
 	parsed.SearchTerms = strings.TrimSpace(parsed.SearchTerms)
 	return parsed
+}
+
+// TimeRange converts a parsed time-filter keyword into an inclusive [start,end]
+// range relative to now. ok is false when there is no recognized filter.
+func TimeRange(filter string, now time.Time) (start, end time.Time, ok bool) {
+	startOfDay := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	}
+	startOfWeek := func(t time.Time) time.Time {
+		d := startOfDay(t)
+		// ISO-ish: treat Monday as the first day of the week.
+		offset := (int(d.Weekday()) + 6) % 7
+		return d.AddDate(0, 0, -offset)
+	}
+	firstOfMonth := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+	}
+
+	end = now
+	switch filter {
+	case "today":
+		start = startOfDay(now)
+	case "yesterday":
+		start = startOfDay(now.AddDate(0, 0, -1))
+		end = startOfDay(now)
+	case "this week":
+		start = startOfWeek(now)
+	case "last week":
+		end = startOfWeek(now)
+		start = end.AddDate(0, 0, -7)
+	case "this month":
+		start = firstOfMonth(now)
+	case "last month":
+		end = firstOfMonth(now)
+		start = end.AddDate(0, -1, 0)
+	case "last year":
+		start = now.AddDate(-1, 0, 0)
+	default:
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
+}
+
+// inTimeRange reports whether t falls within the parsed query's time filter.
+// When there is no time filter it always returns true.
+func inTimeRange(t time.Time, parsed ParsedQuery, now time.Time) bool {
+	start, end, ok := TimeRange(parsed.TimeFilter, now)
+	if !ok {
+		return true
+	}
+	return !t.Before(start) && !t.After(end)
+}
+
+// FilterByTime drops search results whose document modification time falls
+// outside the parsed query's time filter. Results are returned unchanged when
+// there is no time filter.
+func FilterByTime(results storage.SearchResults, parsed ParsedQuery, now time.Time) storage.SearchResults {
+	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+		return results
+	}
+	filtered := make(storage.SearchResults, 0, len(results))
+	for _, r := range results {
+		if r.Document != nil && inTimeRange(r.Document.ModifiedAt, parsed, now) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// FilterDocumentsByTime is the document-slice equivalent of FilterByTime.
+func FilterDocumentsByTime(docs []*storage.Document, parsed ParsedQuery, now time.Time) []*storage.Document {
+	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+		return docs
+	}
+	filtered := make([]*storage.Document, 0, len(docs))
+	for _, d := range docs {
+		if d != nil && inTimeRange(d.ModifiedAt, parsed, now) {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
 }
 
 // buildRAGPrompt constructs the prompt for RAG-style answer generation.

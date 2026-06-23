@@ -7,7 +7,50 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jankowtf/mindcli/internal/storage"
 )
+
+func TestFilterByTime(t *testing.T) {
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC) // a Monday
+	mk := func(daysAgo int) *storage.SearchResult {
+		return &storage.SearchResult{Document: &storage.Document{
+			ModifiedAt: now.AddDate(0, 0, -daysAgo),
+		}}
+	}
+	results := storage.SearchResults{mk(0), mk(3), mk(10), mk(40)}
+
+	// No filter: everything passes through unchanged.
+	if got := FilterByTime(results, ParseQuery("notes"), now); len(got) != 4 {
+		t.Errorf("no filter: got %d, want 4", len(got))
+	}
+
+	// "this month" (Jun 1 .. Jun 15): the docs 0/3/10 days ago fall in June;
+	// the 40-day-old one (early May) does not.
+	parsed := ParseQuery("notes this month")
+	if parsed.TimeFilter != "this month" {
+		t.Fatalf("TimeFilter = %q, want 'this month'", parsed.TimeFilter)
+	}
+	got := FilterByTime(results, parsed, now)
+	if len(got) != 3 {
+		t.Errorf("this month: got %d results, want 3", len(got))
+	}
+}
+
+func TestTimeRange(t *testing.T) {
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	if _, _, ok := TimeRange("", now); ok {
+		t.Error("empty filter should not be ok")
+	}
+	start, end, ok := TimeRange("last month", now)
+	if !ok {
+		t.Fatal("last month should be ok")
+	}
+	if start.Month() != time.May || end.Month() != time.June || end.Day() != 1 {
+		t.Errorf("last month range = [%s, %s], want May 1 .. Jun 1", start, end)
+	}
+}
 
 func TestParseQuery(t *testing.T) {
 	tests := []struct {

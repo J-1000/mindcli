@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
@@ -176,6 +177,9 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 				return errMsg{err}
 			}
 		}
+
+		// Apply any parsed time filter (e.g. "last week").
+		docs = query.FilterDocumentsByTime(docs, parsed, time.Now())
 
 		return searchResultsMsg{docs: docs, parsed: parsed}
 	}

@@ -336,7 +336,7 @@ func searchResults(ctx context.Context, s *stores, parsed query.ParsedQuery, lim
 		}
 	}
 
-	return results, nil
+	return query.FilterByTime(results, parsed, time.Now()), nil
 }
 
 func runTUI() error {
