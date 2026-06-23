@@ -77,6 +77,10 @@ func run() error {
 			return runAsk(strings.Join(os.Args[2:], " "))
 		case "clean":
 			return runClean()
+		case "stats":
+			return runStats()
+		case "doctor":
+			return runDoctor()
 		case "config":
 			return runConfigInit()
 		case "version", "-v", "--version":
@@ -107,6 +111,8 @@ Usage:
   mindcli clipboard    Manage clipboard index (clear, cleanup)
   mindcli collection   Manage collections (create, delete, list, show, add, remove, rename)
   mindcli clean        Remove documents whose files no longer exist
+  mindcli stats        Show index statistics
+  mindcli doctor       Check configuration and service health
   mindcli config       Initialize config file
   mindcli version      Show version info
   mindcli help         Show this help
@@ -958,6 +964,144 @@ func runClean() error {
 		fmt.Fprintf(os.Stderr, "warning: saving vectors: %v\n", err)
 	}
 	fmt.Printf("Removed %d documents whose files no longer exist.\n", removed)
+	return nil
+}
+
+func runStats() error {
+	s, err := openStores(openOpts{vectors: true})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	total, _ := s.db.CountDocuments(ctx)
+	fmt.Printf("Documents: %d\n", total)
+
+	fmt.Println("By source:")
+	for _, src := range []storage.Source{
+		storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail,
+		storage.SourceBrowser, storage.SourceClipboard,
+	} {
+		if n, _ := s.db.CountDocumentsBySource(ctx, src); n > 0 {
+			fmt.Printf("  %-10s %d\n", src, n)
+		}
+	}
+
+	tags, _ := s.db.ListAllTags(ctx)
+	cols, _ := s.db.ListCollections(ctx)
+	fmt.Printf("Tags: %d\n", len(tags))
+	fmt.Printf("Collections: %d\n", len(cols))
+
+	if s.vectors != nil {
+		fmt.Printf("Vectors: %d (model: %s, dim: %d)\n", s.vectors.Len(), s.vectors.Model(), s.vectors.Dim())
+	} else {
+		fmt.Println("Vectors: none (run 'mindcli index' with Ollama/OpenAI available)")
+	}
+
+	fmt.Println("Storage:")
+	printPathSize("  database    ", filepath.Join(s.dataDir, "mindcli.db"))
+	printPathSize("  search index", filepath.Join(s.dataDir, "search.bleve"))
+	printPathSize("  vectors     ", filepath.Join(s.dataDir, "vectors.graph"))
+	return nil
+}
+
+func printPathSize(label, path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	var size int64
+	if info.IsDir() {
+		filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				if fi, e := d.Info(); e == nil {
+					size += fi.Size()
+				}
+			}
+			return nil
+		})
+	} else {
+		size = info.Size()
+	}
+	fmt.Printf("%s %s\n", label, humanSize(size))
+}
+
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func runDoctor() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Printf("x config: %v\n", err)
+		return err
+	}
+	fmt.Println("ok config valid")
+	fmt.Printf("  provider:  %s\n", cfg.Embeddings.Provider)
+	fmt.Printf("  model:     %s\n", cfg.Embeddings.Model)
+	fmt.Printf("  llm_model: %s\n", cfg.Embeddings.LLMModel)
+
+	ctx := context.Background()
+	switch cfg.Embeddings.Provider {
+	case "ollama":
+		emb := embeddings.NewOllamaEmbedder(cfg.Embeddings.OllamaURL, cfg.Embeddings.Model)
+		if v, err := emb.Embed(ctx, "ping"); err != nil {
+			fmt.Printf("x ollama unreachable at %s: %v\n", cfg.Embeddings.OllamaURL, err)
+		} else {
+			fmt.Printf("ok ollama reachable (model %s, dim %d)\n", cfg.Embeddings.Model, len(v))
+		}
+	case "openai":
+		emb := embeddings.NewOpenAIEmbedder(cfg.Embeddings.OpenAIKey, cfg.Embeddings.Model)
+		if v, err := emb.Embed(ctx, "ping"); err != nil {
+			fmt.Printf("x openai error: %v\n", err)
+		} else {
+			fmt.Printf("ok openai reachable (model %s, dim %d)\n", cfg.Embeddings.Model, len(v))
+		}
+	}
+
+	checkPaths := func(label string, enabled bool, paths []string) {
+		if !enabled {
+			return
+		}
+		for _, p := range paths {
+			if _, err := os.Stat(p); err != nil {
+				fmt.Printf("x %s path missing: %s\n", label, p)
+			} else {
+				fmt.Printf("ok %s path: %s\n", label, p)
+			}
+		}
+	}
+	checkPaths("markdown", cfg.Sources.Markdown.Enabled, cfg.Sources.Markdown.Paths)
+	checkPaths("pdf", cfg.Sources.PDF.Enabled, cfg.Sources.PDF.Paths)
+	checkPaths("email", cfg.Sources.Email.Enabled, cfg.Sources.Email.Paths)
+
+	dataDir, err := cfg.DataDir()
+	if err != nil {
+		return nil
+	}
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	if _, err := os.Stat(vectorPath); err == nil {
+		if vs, err := storage.NewVectorStore(vectorPath); err == nil {
+			defer vs.Close()
+			switch {
+			case vs.Model() != "" && vs.Model() != cfg.Embeddings.Model:
+				fmt.Printf("x vector store model %q != configured %q (run 'mindcli reindex')\n",
+					vs.Model(), cfg.Embeddings.Model)
+			default:
+				fmt.Printf("ok vector store: %d vectors (model %s, dim %d)\n", vs.Len(), vs.Model(), vs.Dim())
+			}
+		}
+	}
 	return nil
 }
 
