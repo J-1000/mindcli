@@ -222,6 +222,15 @@ func (s *stores) openVectors(indexing bool) {
 			fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
 			return
 		}
+		// Warn loudly if the configured model differs from the one that
+		// produced the existing vectors: dimensions may not match and a full
+		// reindex (mindcli index -force) is needed for consistent results.
+		if prev := vs.Model(); prev != "" && prev != s.cfg.Embeddings.Model {
+			fmt.Fprintf(os.Stderr,
+				"warning: embedding model changed (%s -> %s); run 'mindcli index -force' to rebuild the vector index\n",
+				prev, s.cfg.Embeddings.Model)
+		}
+		vs.SetModel(s.cfg.Embeddings.Model)
 		s.vectors = vs
 		return
 	}
