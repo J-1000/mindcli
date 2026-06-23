@@ -38,6 +38,43 @@ func (m *mockEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 func (m *mockEmbedder) Dimensions() int { return m.dim }
 
+// TestCachedEmbedderModelScoping verifies that two embedders sharing the same
+// cache file but using different model names do not return each other's
+// (possibly differently dimensioned) vectors.
+func TestCachedEmbedderModelScoping(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "cache.db")
+	ctx := context.Background()
+
+	mockA := &mockEmbedder{dim: 8}
+	cacheA, err := NewCachedEmbedder(mockA, cachePath, "model-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cacheA.Embed(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	cacheA.Close()
+
+	// A different model sharing the same cache file must not reuse model-a's entry.
+	mockB := &mockEmbedder{dim: 16}
+	cacheB, err := NewCachedEmbedder(mockB, cachePath, "model-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cacheB.Close()
+
+	emb, err := cacheB.Embed(ctx, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mockB.calls != 1 {
+		t.Errorf("expected model-b inner call (no cross-model cache hit), got %d calls", mockB.calls)
+	}
+	if len(emb) != 16 {
+		t.Errorf("expected model-b dimension 16, got %d (stale cross-model vector)", len(emb))
+	}
+}
+
 func TestCachedEmbedder(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mindcli-cache-test")
 	if err != nil {
@@ -46,7 +83,7 @@ func TestCachedEmbedder(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	mock := &mockEmbedder{dim: 128}
-	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"))
+	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"), "test-model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +138,7 @@ func TestCachedEmbedderBatch(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	mock := &mockEmbedder{dim: 64}
-	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"))
+	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"), "test-model")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -95,11 +95,19 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "valid openai provider",
+			name: "valid openai provider with key",
+			modify: func(c *Config) {
+				c.Embeddings.Provider = "openai"
+				c.Embeddings.OpenAIKey = "sk-test"
+			},
+			wantErr: false,
+		},
+		{
+			name: "openai provider missing key",
 			modify: func(c *Config) {
 				c.Embeddings.Provider = "openai"
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 	}
 
@@ -404,6 +412,49 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	}
 	if got := strings.Join(cfg.Privacy.RedactPatterns, ","); got != "token-[0-9]+,secret-[a-z]+" {
 		t.Errorf("Privacy.RedactPatterns = %q, want %q", got, "token-[0-9]+,secret-[a-z]+")
+	}
+}
+
+func TestLoadExpandsTildePaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir: %v", err)
+	}
+
+	// Point at a non-existent config file so defaults + env overrides are used.
+	t.Setenv("MINDCLI_CONFIG_PATH", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("MINDCLI_STORAGE_PATH", "~/data/mindcli")
+	t.Setenv("MINDCLI_SOURCES_MARKDOWN_PATHS", "~/notes,/abs/path")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	wantStorage := filepath.Join(home, "data", "mindcli")
+	if cfg.Storage.Path != wantStorage {
+		t.Errorf("Storage.Path = %q, want %q", cfg.Storage.Path, wantStorage)
+	}
+	wantMarkdown := filepath.Join(home, "notes")
+	if cfg.Sources.Markdown.Paths[0] != wantMarkdown {
+		t.Errorf("Sources.Markdown.Paths[0] = %q, want %q", cfg.Sources.Markdown.Paths[0], wantMarkdown)
+	}
+	if cfg.Sources.Markdown.Paths[1] != "/abs/path" {
+		t.Errorf("Sources.Markdown.Paths[1] = %q, want /abs/path", cfg.Sources.Markdown.Paths[1])
+	}
+}
+
+func TestLoadAppliesEnvOverridesWithoutConfigFile(t *testing.T) {
+	// Env overrides must apply even when no config file exists on disk.
+	t.Setenv("MINDCLI_CONFIG_PATH", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("MINDCLI_INDEXING_WORKERS", "7")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Indexing.Workers != 7 {
+		t.Errorf("Indexing.Workers = %d, want 7 (env override without config file)", cfg.Indexing.Workers)
 	}
 }
 

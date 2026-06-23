@@ -85,6 +85,21 @@ func TestFuseResultsPureBM25(t *testing.T) {
 	}
 }
 
+func BenchmarkFuseResults(b *testing.B) {
+	h := &HybridSearcher{HybridWeight: 0.5}
+	bm25 := make([]search.SearchResult, 100)
+	vec := make([]storage.VectorResult, 100)
+	for i := range bm25 {
+		bm25[i] = search.SearchResult{ID: "doc" + string(rune('a'+i%26)) + string(rune('0'+i%10)), Score: float64(100 - i)}
+		vec[i] = storage.VectorResult{Key: "doc" + string(rune('a'+(i+3)%26)) + string(rune('0'+i%10)) + ":0", Score: 1.0 - float64(i)/100}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = h.fuseResults(bm25, vec)
+	}
+}
+
 func TestFuseResultsPureVector(t *testing.T) {
 	h := &HybridSearcher{HybridWeight: 1.0} // Pure vector
 

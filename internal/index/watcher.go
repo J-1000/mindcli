@@ -58,6 +58,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			close(w.done)
+			// Flush any work already applied to the in-memory graph.
+			if err := w.indexer.SaveVectors(); err != nil {
+				log.Printf("saving vectors on shutdown: %v", err)
+			}
 			return w.watcher.Close()
 
 		case event, ok := <-w.watcher.Events:
@@ -136,12 +140,15 @@ func (w *Watcher) processPending(ctx context.Context) {
 	}
 	w.mu.Unlock()
 
+	changed := false
 	for _, path := range ready {
 		// Check if file still exists.
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			// File was removed.
 			if err := w.indexer.RemoveFile(ctx, path); err != nil {
 				log.Printf("removing %s from index: %v", path, err)
+			} else {
+				changed = true
 			}
 			continue
 		}
@@ -149,6 +156,16 @@ func (w *Watcher) processPending(ctx context.Context) {
 		// Re-index the file.
 		if err := w.indexer.IndexFile(ctx, path); err != nil {
 			log.Printf("re-indexing %s: %v", path, err)
+		} else {
+			changed = true
+		}
+	}
+
+	// Persist vectors added/removed in this batch so watcher work survives a
+	// restart (the in-memory HNSW graph is otherwise lost on exit).
+	if changed {
+		if err := w.indexer.SaveVectors(); err != nil {
+			log.Printf("saving vectors: %v", err)
 		}
 	}
 }

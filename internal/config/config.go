@@ -93,9 +93,13 @@ type StorageConfig struct {
 	Path string `yaml:"path"`
 }
 
-// PrivacyConfig configures privacy controls for displaying content.
+// PrivacyConfig configures privacy controls.
 type PrivacyConfig struct {
 	RedactPatterns []string `yaml:"redact_patterns"`
+	// RedactContent, when true, applies RedactPatterns to document content and
+	// previews at index time (not just on display), so secrets are never
+	// stored in the database or search index.
+	RedactContent bool `yaml:"redact_content"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -169,6 +173,9 @@ func (c *Config) Validate() error {
 	if c.Embeddings.Provider != "ollama" && c.Embeddings.Provider != "openai" {
 		return errors.New("embeddings.provider must be 'ollama' or 'openai'")
 	}
+	if c.Embeddings.Provider == "openai" && c.Embeddings.OpenAIKey == "" {
+		return errors.New("embeddings.openai_key is required when embeddings.provider is 'openai'")
+	}
 	return nil
 }
 
@@ -177,26 +184,45 @@ func (c *Config) Validate() error {
 func Load() (*Config, error) {
 	cfg := Default()
 
-	configPath, err := ConfigPath()
-	if err != nil {
-		return cfg, nil // Use defaults if we can't find config dir
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil // No config file, use defaults
+	// Layer the config file on top of defaults when one exists. A missing
+	// file is fine (defaults are used); env overrides and path expansion are
+	// always applied so they work even without a config file.
+	if configPath, err := ConfigPath(); err == nil {
+		data, err := os.ReadFile(configPath)
+		switch {
+		case err == nil:
+			if err := yaml.Unmarshal(data, cfg); err != nil {
+				return nil, err
+			}
+		case !os.IsNotExist(err):
+			return nil, err
 		}
-		return nil, err
-	}
-
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
 	}
 
 	applyEnvOverrides(cfg)
+	expandConfigPaths(cfg)
 
 	return cfg, nil
+}
+
+// expandConfigPaths expands a leading ~ in all configured paths so that
+// hand-edited configs (and env overrides) using ~ behave like absolute paths.
+func expandConfigPaths(cfg *Config) {
+	cfg.Storage.Path = expandUserPath(cfg.Storage.Path)
+	cfg.Sources.Markdown.Paths = expandUserPaths(cfg.Sources.Markdown.Paths)
+	cfg.Sources.PDF.Paths = expandUserPaths(cfg.Sources.PDF.Paths)
+	cfg.Sources.Email.Paths = expandUserPaths(cfg.Sources.Email.Paths)
+}
+
+func expandUserPaths(paths []string) []string {
+	if paths == nil {
+		return nil
+	}
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = expandUserPath(p)
+	}
+	return out
 }
 
 // Save writes the configuration to the YAML file.
@@ -319,6 +345,7 @@ func applyEnvOverrides(cfg *Config) {
 
 	// Privacy
 	setCSVFromEnv("MINDCLI_PRIVACY_REDACT_PATTERNS", &cfg.Privacy.RedactPatterns)
+	setBoolFromEnv("MINDCLI_PRIVACY_REDACT_CONTENT", &cfg.Privacy.RedactContent)
 }
 
 func setStringFromEnv(name string, dst *string) {

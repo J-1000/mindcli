@@ -37,11 +37,11 @@ func TestScanner_Scan(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		config     ScanConfig
-		wantCount  int
-		wantPaths  []string
-		dontWant   []string
+		name      string
+		config    ScanConfig
+		wantCount int
+		wantPaths []string
+		dontWant  []string
 	}{
 		{
 			name: "markdown only",
@@ -144,6 +144,7 @@ func TestScanner_Cancellation(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	filesChan, _ := scanner.Scan(ctx)
 
 	// Cancel after first file

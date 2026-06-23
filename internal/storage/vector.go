@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -12,7 +13,19 @@ import (
 type VectorStore struct {
 	graph *hnsw.SavedGraph[string]
 	mu    sync.RWMutex
+	path  string
+	dim   int    // vector dimension (set on first insert or loaded from meta)
+	model string // embedding model that produced the vectors
 }
+
+// vectorMeta is persisted alongside the graph so model/dimension changes can be
+// detected across runs.
+type vectorMeta struct {
+	Model string `json:"model"`
+	Dim   int    `json:"dim"`
+}
+
+func metaPath(path string) string { return path + ".meta.json" }
 
 // NewVectorStore creates or loads a vector store from disk.
 func NewVectorStore(path string) (*VectorStore, error) {
@@ -31,13 +44,80 @@ func NewVectorStore(path string) (*VectorStore, error) {
 
 	g.Graph.Distance = hnsw.CosineDistance
 
-	return &VectorStore{graph: g}, nil
+	v := &VectorStore{graph: g, path: path}
+	v.loadMeta()
+	return v, nil
+}
+
+func (v *VectorStore) loadMeta() {
+	data, err := os.ReadFile(metaPath(v.path))
+	if err != nil {
+		return
+	}
+	var m vectorMeta
+	if json.Unmarshal(data, &m) == nil {
+		v.model = m.Model
+		v.dim = m.Dim
+	}
+}
+
+func (v *VectorStore) saveMeta() error {
+	if v.model == "" && v.dim == 0 {
+		return nil
+	}
+	data, err := json.Marshal(vectorMeta{Model: v.model, Dim: v.dim})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(metaPath(v.path), data, 0644)
+}
+
+// SetModel records the embedding model that produced (or will produce) the
+// vectors in this store.
+func (v *VectorStore) SetModel(model string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.model = model
+}
+
+// Model returns the embedding model recorded for this store ("" if unknown).
+func (v *VectorStore) Model() string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.model
+}
+
+// Dim returns the vector dimension recorded for this store (0 if unknown).
+func (v *VectorStore) Dim() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.dim
+}
+
+// checkDim sets the dimension on first use and rejects mismatched vectors.
+// Callers must hold the write lock.
+func (v *VectorStore) checkDim(n int) error {
+	if n == 0 {
+		return fmt.Errorf("empty vector")
+	}
+	if v.dim == 0 {
+		v.dim = n
+		return nil
+	}
+	if n != v.dim {
+		return fmt.Errorf("vector dimension %d does not match store dimension %d", n, v.dim)
+	}
+	return nil
 }
 
 // Add inserts or updates a vector for the given key.
-func (v *VectorStore) Add(key string, vector []float32) {
+func (v *VectorStore) Add(key string, vector []float32) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	if err := v.checkDim(len(vector)); err != nil {
+		return err
+	}
 
 	v.normalizeEmptyGraph()
 
@@ -45,12 +125,13 @@ func (v *VectorStore) Add(key string, vector []float32) {
 	v.graph.Delete(key)
 	v.normalizeEmptyGraph()
 	v.graph.Add(hnsw.MakeNode(key, vector))
+	return nil
 }
 
 // AddBatch inserts multiple vectors at once.
-func (v *VectorStore) AddBatch(keys []string, vectors [][]float32) {
+func (v *VectorStore) AddBatch(keys []string, vectors [][]float32) error {
 	if len(keys) != len(vectors) {
-		return
+		return fmt.Errorf("keys (%d) and vectors (%d) length mismatch", len(keys), len(vectors))
 	}
 
 	v.mu.Lock()
@@ -58,13 +139,17 @@ func (v *VectorStore) AddBatch(keys []string, vectors [][]float32) {
 
 	v.normalizeEmptyGraph()
 
-	nodes := make([]hnsw.Node[string], len(keys))
+	nodes := make([]hnsw.Node[string], 0, len(keys))
 	for i := range keys {
+		if err := v.checkDim(len(vectors[i])); err != nil {
+			return err
+		}
 		v.graph.Delete(keys[i])
-		nodes[i] = hnsw.MakeNode(keys[i], vectors[i])
+		nodes = append(nodes, hnsw.MakeNode(keys[i], vectors[i]))
 	}
 	v.normalizeEmptyGraph()
 	v.graph.Add(nodes...)
+	return nil
 }
 
 // Search finds the k nearest neighbors to the query vector.
@@ -101,17 +186,6 @@ func (v *VectorStore) Delete(key string) {
 	v.normalizeEmptyGraph()
 }
 
-// DeleteByPrefix removes all vectors whose keys start with the given prefix.
-// Useful for removing all chunks of a document (prefix = docID).
-func (v *VectorStore) DeleteByPrefix(prefix string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	// We need to collect keys first since we can't modify during iteration.
-	// The HNSW graph doesn't expose iteration, so we track keys externally
-	// or just use Lookup. For now, we rely on the caller knowing the keys.
-}
-
 func (v *VectorStore) normalizeEmptyGraph() {
 	// The underlying HNSW implementation can retain empty layers after deletes.
 	// Recreate the graph when it's logically empty to keep future Add/AddBatch safe.
@@ -129,11 +203,14 @@ func (v *VectorStore) Len() int {
 	return v.graph.Len()
 }
 
-// Save persists the vector store to disk.
+// Save persists the vector store (and its model/dimension metadata) to disk.
 func (v *VectorStore) Save() error {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	return v.graph.Save()
+	if err := v.graph.Save(); err != nil {
+		return err
+	}
+	return v.saveMeta()
 }
 
 // Close saves and closes the vector store.

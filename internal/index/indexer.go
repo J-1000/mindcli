@@ -11,6 +11,7 @@ import (
 	"github.com/jankowtf/mindcli/internal/config"
 	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index/sources"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 	"github.com/jankowtf/mindcli/pkg/chunker"
@@ -25,6 +26,10 @@ type Indexer struct {
 	sources  []sources.Source
 	workers  int
 	progress ProgressReporter
+	force    bool // when true, re-index even unchanged files (and re-embed)
+
+	redactor      privacy.Redactor
+	redactContent bool
 }
 
 // ProgressReporter receives progress updates during indexing.
@@ -107,6 +112,30 @@ func (idx *Indexer) SetProgressReporter(pr ProgressReporter) {
 	idx.progress = pr
 }
 
+// SetForce controls whether unchanged files are re-indexed (and re-embedded).
+// Use this for a full rebuild, e.g. after changing the embedding model.
+func (idx *Indexer) SetForce(force bool) {
+	idx.force = force
+}
+
+// SetRedactor configures index-time redaction. When redactContent is true and
+// the redactor has patterns, document content and previews are redacted before
+// they are stored or indexed.
+func (idx *Indexer) SetRedactor(r privacy.Redactor, redactContent bool) {
+	idx.redactor = r
+	idx.redactContent = redactContent
+}
+
+// applyRedaction redacts a document's content and preview in place when
+// index-time redaction is enabled.
+func (idx *Indexer) applyRedaction(doc *storage.Document) {
+	if !idx.redactContent || !idx.redactor.Enabled() {
+		return
+	}
+	doc.Content = idx.redactor.Redact(doc.Content)
+	doc.Preview = idx.redactor.Redact(doc.Preview)
+}
+
 // IndexAll indexes all documents from all configured sources.
 func (idx *Indexer) IndexAll(ctx context.Context) (*Stats, error) {
 	stats := &Stats{
@@ -182,15 +211,11 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					idx.progress.OnProgress(string(src.Name()), int(current), len(allFiles), file.Path)
 				}
 
-				// Check if file needs indexing (compare hash)
-				existing, err := idx.db.GetDocumentByPath(ctx, file.Path)
-				if err == nil && existing != nil {
-					// File exists, check if modified
-					if existing.ModifiedAt.Unix() >= file.ModifiedAt {
-						// Not modified, skip
-						atomic.AddInt64(&indexed, 1)
-						continue
-					}
+				// Fast path: skip files whose mtime hasn't advanced.
+				existing, _ := idx.db.GetDocumentByPath(ctx, file.Path)
+				if !idx.force && existing != nil && existing.ModifiedAt.Unix() >= file.ModifiedAt {
+					atomic.AddInt64(&indexed, 1)
+					continue
 				}
 
 				// Parse document
@@ -202,6 +227,13 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					atomic.AddInt64(&errors, 1)
 					continue
 				}
+
+				idx.applyRedaction(doc)
+
+				// Content-hash check: if the bytes are identical despite a
+				// newer mtime, refresh metadata but skip the expensive
+				// re-embedding (existing vectors are still valid).
+				unchanged := !idx.force && existing != nil && existing.ContentHash == doc.ContentHash
 
 				// Store in database
 				if err := idx.db.UpsertDocument(ctx, doc); err != nil {
@@ -221,9 +253,15 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
-				// Generate embeddings if available
-				if idx.vectors != nil && idx.embedder != nil {
-					idx.embedDocument(ctx, doc)
+				// Generate embeddings if available (skipped when content is
+				// unchanged, since existing vectors remain valid).
+				if idx.vectors != nil && idx.embedder != nil && !unchanged {
+					if err := idx.embedDocument(ctx, doc); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), file.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+					}
 				}
 
 				atomic.AddInt64(&indexed, 1)
@@ -275,6 +313,7 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 		if err != nil {
 			return fmt.Errorf("parsing: %w", err)
 		}
+		idx.applyRedaction(doc)
 
 		if err := idx.db.UpsertDocument(ctx, doc); err != nil {
 			return fmt.Errorf("storing: %w", err)
@@ -285,7 +324,9 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 		}
 
 		if idx.vectors != nil && idx.embedder != nil {
-			idx.embedDocument(ctx, doc)
+			if err := idx.embedDocument(ctx, doc); err != nil {
+				return fmt.Errorf("embedding: %w", err)
+			}
 		}
 
 		return nil
@@ -359,17 +400,21 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 }
 
 // embedDocument chunks a document, generates embeddings, and stores them.
-func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
+// Errors are returned so callers can surface and count them rather than
+// silently leaving a document without vectors.
+func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) error {
 	// Delete old chunks and vectors for this document.
-	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil && idx.progress != nil {
-		idx.progress.OnError(string(doc.Source), doc.Path, fmt.Errorf("removing vectors: %w", err))
+	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil {
+		return fmt.Errorf("removing old vectors: %w", err)
 	}
-	idx.db.DeleteChunksByDocument(ctx, doc.ID)
+	if err := idx.db.DeleteChunksByDocument(ctx, doc.ID); err != nil {
+		return fmt.Errorf("removing old chunks: %w", err)
+	}
 
 	// Chunk the document content.
 	chunks := chunker.Split(doc.Content, chunker.DefaultOptions())
 	if len(chunks) == 0 {
-		return
+		return nil
 	}
 
 	// Collect chunk texts and keys.
@@ -383,11 +428,7 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 	// Generate embeddings in batch.
 	embeds, err := idx.embedder.EmbedBatch(ctx, texts)
 	if err != nil {
-		if idx.progress != nil {
-			idx.progress.OnError(string(doc.Source), doc.Path,
-				fmt.Errorf("generating embeddings: %w", err))
-		}
-		return
+		return fmt.Errorf("generating embeddings: %w", err)
 	}
 
 	// Store chunks in SQLite and vectors in HNSW.
@@ -399,10 +440,53 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 			StartPos:   c.StartPos,
 			EndPos:     c.EndPos,
 		}
-		idx.db.InsertChunk(ctx, chunk)
+		if err := idx.db.InsertChunk(ctx, chunk); err != nil {
+			return fmt.Errorf("inserting chunk: %w", err)
+		}
 	}
 
-	idx.vectors.AddBatch(keys, embeds)
+	if err := idx.vectors.AddBatch(keys, embeds); err != nil {
+		return fmt.Errorf("adding vectors: %w", err)
+	}
+	return nil
+}
+
+// Prune removes indexed documents whose backing file no longer exists. Only
+// filesystem-backed sources (markdown, pdf, email) are considered; browser and
+// clipboard entries are not file-backed and are left untouched. Callers should
+// SaveVectors afterwards to persist vector removals.
+func (idx *Indexer) Prune(ctx context.Context) (int, error) {
+	docs, err := idx.db.ListDocuments(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, doc := range docs {
+		if !isFileBackedSource(doc.Source) {
+			continue
+		}
+		if _, err := os.Stat(doc.Path); !os.IsNotExist(err) {
+			continue
+		}
+		if err := idx.RemoveFile(ctx, doc.Path); err != nil {
+			if idx.progress != nil {
+				idx.progress.OnError(string(doc.Source), doc.Path, err)
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func isFileBackedSource(s storage.Source) bool {
+	switch s {
+	case storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail:
+		return true
+	default:
+		return false
+	}
 }
 
 func (idx *Indexer) deleteDocumentVectors(ctx context.Context, docID string) error {

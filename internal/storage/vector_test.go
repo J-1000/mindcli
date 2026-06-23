@@ -6,6 +6,56 @@ import (
 	"testing"
 )
 
+func TestVectorStoreDimMismatch(t *testing.T) {
+	store, err := NewVectorStore(filepath.Join(t.TempDir(), "test.graph"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Add("a", []float32{1, 0, 0}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if store.Dim() != 3 {
+		t.Errorf("Dim() = %d, want 3", store.Dim())
+	}
+	if err := store.Add("b", []float32{1, 0}); err == nil {
+		t.Error("expected dimension-mismatch error, got nil")
+	}
+	if err := store.AddBatch([]string{"c"}, [][]float32{{1, 0, 0, 0}}); err == nil {
+		t.Error("expected AddBatch dimension-mismatch error, got nil")
+	}
+}
+
+func TestVectorStoreMetaPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.graph")
+
+	store, err := NewVectorStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetModel("nomic-embed-text")
+	if err := store.Add("a", []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := NewVectorStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.Model() != "nomic-embed-text" {
+		t.Errorf("Model() = %q, want nomic-embed-text", reopened.Model())
+	}
+	if reopened.Dim() != 3 {
+		t.Errorf("Dim() = %d, want 3", reopened.Dim())
+	}
+}
+
 func TestVectorStoreAddAndSearch(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "mindcli-vector-test")
 	if err != nil {

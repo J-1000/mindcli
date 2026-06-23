@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the MindCLI file watcher (macOS).
+
+  Install:
+    cp init/launchd/com.github.jankowtf.mindcli.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.github.jankowtf.mindcli.plist
+
+  Adjust the mindcli path below if it is not installed at /usr/local/bin.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.jankowtf.mindcli</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/mindcli</string>
+        <string>watch</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/mindcli.watch.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mindcli.watch.err.log</string>
+</dict>
+</plist>

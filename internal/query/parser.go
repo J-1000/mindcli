@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jankowtf/mindcli/internal/storage"
 )
 
 // QueryIntent represents what the user wants to do.
@@ -36,19 +39,39 @@ type AnswerConfidence struct {
 	Level string  // low, medium, high
 }
 
-// LLMClient calls a local Ollama instance for text generation.
+const defaultOpenAIBaseURL = "https://api.openai.com/v1"
+
+// LLMClient generates text via a local Ollama instance or the OpenAI API.
 type LLMClient struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	provider string // "ollama" | "openai"
+	baseURL  string
+	model    string
+	apiKey   string
+	client   *http.Client
 }
 
 // NewLLMClient creates a client for Ollama text generation.
 func NewLLMClient(baseURL, model string) *LLMClient {
 	return &LLMClient{
-		baseURL: baseURL,
-		model:   model,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		provider: "ollama",
+		baseURL:  baseURL,
+		model:    model,
+		client:   &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// NewOpenAILLMClient creates a client for OpenAI chat-completion generation.
+func NewOpenAILLMClient(apiKey, model string) *LLMClient {
+	baseURL := defaultOpenAIBaseURL
+	if env := os.Getenv("OPENAI_BASE_URL"); env != "" {
+		baseURL = env
+	}
+	return &LLMClient{
+		provider: "openai",
+		baseURL:  baseURL,
+		model:    model,
+		apiKey:   apiKey,
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -65,8 +88,11 @@ type ollamaGenerateResponse struct {
 	Done     bool   `json:"done"`
 }
 
-// Generate calls Ollama to generate text from a prompt.
+// Generate produces text from a prompt using the configured provider.
 func (c *LLMClient) Generate(ctx context.Context, prompt string) (string, error) {
+	if c.provider == "openai" {
+		return c.openAIGenerate(ctx, prompt)
+	}
 	reqBody := ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
@@ -165,8 +191,101 @@ func ParseQuery(query string) ParsedQuery {
 	return parsed
 }
 
+// TimeRange converts a parsed time-filter keyword into an inclusive [start,end]
+// range relative to now. ok is false when there is no recognized filter.
+func TimeRange(filter string, now time.Time) (start, end time.Time, ok bool) {
+	startOfDay := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	}
+	startOfWeek := func(t time.Time) time.Time {
+		d := startOfDay(t)
+		// ISO-ish: treat Monday as the first day of the week.
+		offset := (int(d.Weekday()) + 6) % 7
+		return d.AddDate(0, 0, -offset)
+	}
+	firstOfMonth := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+	}
+
+	end = now
+	switch filter {
+	case "today":
+		start = startOfDay(now)
+	case "yesterday":
+		start = startOfDay(now.AddDate(0, 0, -1))
+		end = startOfDay(now)
+	case "this week":
+		start = startOfWeek(now)
+	case "last week":
+		end = startOfWeek(now)
+		start = end.AddDate(0, 0, -7)
+	case "this month":
+		start = firstOfMonth(now)
+	case "last month":
+		end = firstOfMonth(now)
+		start = end.AddDate(0, -1, 0)
+	case "last year":
+		start = now.AddDate(-1, 0, 0)
+	default:
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
+}
+
+// inTimeRange reports whether t falls within the parsed query's time filter.
+// When there is no time filter it always returns true.
+func inTimeRange(t time.Time, parsed ParsedQuery, now time.Time) bool {
+	start, end, ok := TimeRange(parsed.TimeFilter, now)
+	if !ok {
+		return true
+	}
+	return !t.Before(start) && !t.After(end)
+}
+
+// FilterByTime drops search results whose document modification time falls
+// outside the parsed query's time filter. Results are returned unchanged when
+// there is no time filter.
+func FilterByTime(results storage.SearchResults, parsed ParsedQuery, now time.Time) storage.SearchResults {
+	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+		return results
+	}
+	filtered := make(storage.SearchResults, 0, len(results))
+	for _, r := range results {
+		if r.Document != nil && inTimeRange(r.Document.ModifiedAt, parsed, now) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// FilterDocumentsByTime is the document-slice equivalent of FilterByTime.
+func FilterDocumentsByTime(docs []*storage.Document, parsed ParsedQuery, now time.Time) []*storage.Document {
+	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+		return docs
+	}
+	filtered := make([]*storage.Document, 0, len(docs))
+	for _, d := range docs {
+		if d != nil && inTimeRange(d.ModifiedAt, parsed, now) {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
+// ConversationTurn is a prior question/answer pair for follow-up context.
+type ConversationTurn struct {
+	Question string
+	Answer   string
+}
+
 // buildRAGPrompt constructs the prompt for RAG-style answer generation.
 func buildRAGPrompt(question string, contexts []string) string {
+	return buildRAGPromptWithHistory(question, contexts, nil)
+}
+
+// buildRAGPromptWithHistory is buildRAGPrompt with prior conversation turns
+// prepended so follow-up questions ("tell me more") retain context.
+func buildRAGPromptWithHistory(question string, contexts []string, history []ConversationTurn) string {
 	var contextStr strings.Builder
 	for i, ctx := range contexts {
 		if i >= 5 {
@@ -175,13 +294,21 @@ func buildRAGPrompt(question string, contexts []string) string {
 		contextStr.WriteString(fmt.Sprintf("--- Document %d ---\n%s\n\n", i+1, ctx))
 	}
 
-	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely.
+	var historyStr strings.Builder
+	for _, turn := range history {
+		historyStr.WriteString(fmt.Sprintf("Q: %s\nA: %s\n\n", turn.Question, turn.Answer))
+	}
+	conversation := ""
+	if historyStr.Len() > 0 {
+		conversation = "Conversation so far:\n" + historyStr.String() + "\n"
+	}
 
-%s
+	return fmt.Sprintf(`Based on the following documents from the user's personal knowledge base, answer the question concisely. Cite the documents you rely on inline as [1], [2], etc., matching the document numbers below. If the documents do not contain the answer, say so.
 
+%s%s
 Question: %s
 
-Answer:`, contextStr.String(), question)
+Answer:`, conversation, contextStr.String(), question)
 }
 
 // GenerateAnswer creates a RAG-style answer from search results using an LLM.
@@ -194,6 +321,9 @@ func (c *LLMClient) GenerateAnswer(ctx context.Context, query string, contexts [
 
 // GenerateStream sends a streaming request and calls onChunk for each token.
 func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk func(token string, done bool)) error {
+	if c.provider == "openai" {
+		return c.openAIGenerateStream(ctx, prompt, onChunk)
+	}
 	reqBody := ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
@@ -242,11 +372,17 @@ func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk f
 
 // GenerateAnswerStream builds the RAG prompt and streams the response.
 func (c *LLMClient) GenerateAnswerStream(ctx context.Context, question string, contexts []string, onChunk func(string, bool)) error {
+	return c.GenerateAnswerStreamWithHistory(ctx, question, contexts, nil, onChunk)
+}
+
+// GenerateAnswerStreamWithHistory streams an answer that takes prior
+// conversation turns into account (for follow-up questions).
+func (c *LLMClient) GenerateAnswerStreamWithHistory(ctx context.Context, question string, contexts []string, history []ConversationTurn, onChunk func(string, bool)) error {
 	if len(contexts) == 0 {
 		onChunk("No relevant documents found.", true)
 		return nil
 	}
-	return c.GenerateStream(ctx, buildRAGPrompt(question, contexts), onChunk)
+	return c.GenerateStream(ctx, buildRAGPromptWithHistory(question, contexts, history), onChunk)
 }
 
 // EstimateAnswerConfidence estimates answer confidence from question/context coverage.

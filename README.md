@@ -63,8 +63,12 @@ mindcli                                      # Start the TUI
 mindcli index                                # Index all configured sources
 mindcli index -paths ~/notes                 # Index specific paths
 mindcli index -watch                         # Index then watch for changes
+mindcli reindex                              # Full rebuild (e.g. after model change)
 mindcli watch                                # Watch directories for changes
 mindcli search "Go concurrency"              # Search and print results
+mindcli stats                                # Show index statistics
+mindcli clean                                # Remove docs whose files are gone
+mindcli doctor                               # Check config and service health
 mindcli export "Go" --format json            # Export results as JSON/CSV/Markdown
 mindcli tag add ~/notes/foo.md mytag         # Add a tag to a document
 mindcli tag list                             # List all tags
@@ -91,6 +95,8 @@ mindcli help                                 # Show help
 | `o` | Open in external app |
 | `y` | Copy file path to clipboard |
 | `r` | Refresh document list |
+| `i` | Index sources now (in-app) |
+| `f` | Cycle source filter (all → markdown → pdf → …) |
 | `t` | Add tag to selected document |
 | `c` | Add to collection |
 | `C` | Browse collections |
@@ -113,7 +119,7 @@ Environment variables can override config values at runtime. Useful examples:
 - `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
 - `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
 - `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_PDF_PATHS`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`, `MINDCLI_SOURCES_BROWSER_BROWSERS`
-- `MINDCLI_PRIVACY_REDACT_PATTERNS`
+- `MINDCLI_PRIVACY_REDACT_PATTERNS`, `MINDCLI_PRIVACY_REDACT_CONTENT`
 
 ```yaml
 sources:
@@ -151,6 +157,10 @@ embeddings:
   model: nomic-embed-text
   llm_model: llama3.2   # model for answer generation
   ollama_url: http://localhost:11434
+  # For provider: openai, set openai_key (required) and use OpenAI models, e.g.
+  # model: text-embedding-3-small, llm_model: gpt-4o-mini. Override the endpoint
+  # with the OPENAI_BASE_URL env var to target an OpenAI-compatible server.
+  openai_key: ""
 
 search:
   hybrid_weight: 0.5    # 0 = pure BM25, 1 = pure vector
@@ -164,11 +174,26 @@ storage:
   path: ~/.local/share/mindcli
 
 privacy:
+  redact_content: false   # true also redacts stored content/preview at index time
   redact_patterns:
     - (?i)api[_-]?key\s*[:=]\s*[A-Za-z0-9_-]{16,}
     - (?i)secret\s*[:=]\s*[A-Za-z0-9_-]{16,}
     - \b[0-9]{16}\b
 ```
+
+## Privacy
+
+All data stays on your machine and there is no telemetry. By default indexed
+content is stored in cleartext under the data directory, and `redact_patterns`
+applies at display time only. Set `privacy.redact_content: true` to redact
+content before it is stored. See [PRIVACY.md](PRIVACY.md) for the full threat
+model, source-specific controls, and at-rest-encryption guidance.
+
+## Running in the background
+
+To keep the index current automatically, run `mindcli watch` as a service.
+Example unit files are provided in [`init/`](init/) for systemd (Linux) and
+launchd (macOS).
 
 ## How Search Works
 
@@ -182,6 +207,17 @@ MindCLI uses a hybrid search approach:
 Natural language queries like `"what did I write about Go in my notes last week"` are parsed to filter by source and time automatically.
 
 When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results with a confidence indicator (low/medium/high) based on source coverage and query overlap. When Ollama is not available, search gracefully falls back to BM25-only mode.
+
+## Performance
+
+Indexing runs a concurrent worker pool and skips unchanged files (by mtime,
+then content hash), so re-indexing is incremental. Search fuses BM25 and vector
+results with Reciprocal Rank Fusion. Benchmarks live alongside the code:
+
+```bash
+go test ./pkg/chunker/ -bench . -benchmem
+go test ./internal/query/ -bench . -benchmem
+```
 
 ## Development
 

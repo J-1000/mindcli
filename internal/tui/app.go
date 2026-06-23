@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
@@ -55,13 +56,25 @@ type Model struct {
 	collectInput textinput.Model
 	redactor     privacy.Redactor
 
+	highlights    map[string][]string // matching snippets per document ID
+	searchVersion int                 // increments per keystroke for debouncing
+	sourceFilter  storage.Source      // active source filter ("" = all sources)
+
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
+	collectionCounts    map[string]int        // doc count per collection ID
 	collectionCursor    int                   // cursor in collections list
 	prevResults         []*storage.Document   // saved results before browsing
 	streaming           bool                  // true while streaming LLM answer
 	streamCh            chan streamChunkMsg   // channel for streaming tokens
 	streamCancel        context.CancelFunc    // cancel in-flight stream
+
+	// reindex runs a full index pass; nil disables in-app indexing.
+	reindex  func(context.Context) (indexed int, errs int, err error)
+	indexing bool // true while an in-app index pass is running
+
+	currentQuestion string                   // question currently being answered
+	conversation    []query.ConversationTurn // recent Q&A turns for follow-ups
 
 	// Dimensions
 	width  int
@@ -72,8 +85,9 @@ type Model struct {
 }
 
 // New creates a new Model with the given database and search index.
-// The hybrid searcher and LLM client are optional; if nil, those features are skipped.
-func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient, redactor privacy.Redactor) Model {
+// The hybrid searcher and LLM client are optional; if nil, those features are
+// skipped. reindex, when non-nil, enables the in-app "index now" action.
+func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient, redactor privacy.Redactor, reindex func(context.Context) (int, int, error)) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -105,6 +119,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		panel:        PanelSearch,
 		keys:         DefaultKeyMap(),
 		redactor:     redactor,
+		reindex:      reindex,
 	}
 }
 
@@ -118,9 +133,10 @@ func (m Model) Init() tea.Cmd {
 
 // loadDocuments loads documents from the database.
 func (m Model) loadDocuments() tea.Cmd {
+	source := m.sourceFilter
 	return func() tea.Msg {
 		ctx := context.Background()
-		docs, err := m.db.ListDocuments(ctx, "")
+		docs, err := m.db.ListDocuments(ctx, source)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -130,18 +146,22 @@ func (m Model) loadDocuments() tea.Cmd {
 
 // searchDocuments searches using hybrid search (BM25 + vector) when available.
 // It uses the query parser to extract intent, source filters, and time filters.
-func (m Model) searchDocuments(q string) tea.Cmd {
+func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		parsed := query.ParseQuery(q)
 
-		// Build search query with source filter if detected.
+		// Build search query with source filter (from the NL query, or the
+		// active filter toggled with 'f').
 		searchQ := parsed.SearchTerms
 		if parsed.SourceFilter != "" {
 			searchQ = searchQ + " source:" + parsed.SourceFilter
+		} else if m.sourceFilter != "" {
+			searchQ = searchQ + " source:" + string(m.sourceFilter)
 		}
 
 		var docs []*storage.Document
+		highlights := make(map[string][]string)
 
 		// Use hybrid search if available
 		if m.hybrid != nil {
@@ -152,6 +172,9 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 			docs = make([]*storage.Document, 0, len(results))
 			for _, r := range results {
 				docs = append(docs, r.Document)
+				if len(r.Highlights) > 0 {
+					highlights[r.Document.ID] = r.Highlights
+				}
 			}
 		} else if m.search != nil {
 			// Use Bleve, fall back to SQLite LIKE search
@@ -167,6 +190,9 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 					continue
 				}
 				docs = append(docs, doc)
+				for _, frags := range r.Highlights {
+					highlights[doc.ID] = append(highlights[doc.ID], frags...)
+				}
 			}
 		} else {
 			// Fallback to simple SQLite search
@@ -177,7 +203,10 @@ func (m Model) searchDocuments(q string) tea.Cmd {
 			}
 		}
 
-		return searchResultsMsg{docs: docs, parsed: parsed}
+		// Apply any parsed time filter (e.g. "last week").
+		docs = query.FilterDocumentsByTime(docs, parsed, time.Now())
+
+		return searchResultsMsg{docs: docs, highlights: highlights, parsed: parsed, live: live}
 	}
 }
 
@@ -187,8 +216,15 @@ type docsLoadedMsg struct {
 }
 
 type searchResultsMsg struct {
-	docs   []*storage.Document
-	parsed query.ParsedQuery
+	docs       []*storage.Document
+	highlights map[string][]string
+	parsed     query.ParsedQuery
+	live       bool // from search-as-you-type (suppresses LLM streaming)
+}
+
+type searchDebounceMsg struct {
+	version int
+	query   string
 }
 
 type errMsg struct {
@@ -197,6 +233,7 @@ type errMsg struct {
 
 type collectionsLoadedMsg struct {
 	collections []*storage.Collection
+	counts      map[string]int
 }
 
 type collectionDocsLoadedMsg struct {
@@ -206,6 +243,12 @@ type collectionDocsLoadedMsg struct {
 type streamChunkMsg struct {
 	token string
 	done  bool
+}
+
+type reindexDoneMsg struct {
+	indexed int
+	errs    int
+	err     error
 }
 
 // Update handles messages and updates the model.
@@ -231,6 +274,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Clear search if in search mode with text
 			m.searchInput.SetValue("")
+			m.conversation = nil
 			return m, m.loadDocuments()
 
 		case key.Matches(msg, m.keys.Help):
@@ -248,6 +292,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Escape):
 			if m.panel == PanelSearch && m.searchInput.Value() != "" {
 				m.searchInput.SetValue("")
+				m.conversation = nil
 				return m, m.loadDocuments()
 			}
 			m.panel = PanelSearch
@@ -273,6 +318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case docsLoadedMsg:
 		m.results = msg.docs
+		m.highlights = nil
 		m.cursor = 0
 		m.statusMsg = fmt.Sprintf("%d documents", len(m.results))
 		m.statusIsErr = false
@@ -281,6 +327,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.results = msg.docs
+		m.highlights = msg.highlights
 		m.cursor = 0
 		m.answerText = ""
 		status := fmt.Sprintf("%d results", len(m.results))
@@ -292,9 +339,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = status
 		m.statusIsErr = false
-		// Start streaming if intent is answer/summarize
-		if m.llm != nil && len(m.results) > 0 &&
+		// Start streaming if intent is answer/summarize (not for live,
+		// keystroke-driven searches — only when the user commits with Enter).
+		if !msg.live && m.llm != nil && len(m.results) > 0 &&
 			(msg.parsed.Intent == query.IntentAnswer || msg.parsed.Intent == query.IntentSummarize) {
+			m.currentQuestion = msg.parsed.Original
 			m.showAnswer() // Shows "Thinking..."
 			return m, m.startStreaming(msg.parsed.Original, m.results)
 		}
@@ -304,6 +353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamChunkMsg:
 		if msg.done {
 			m.streaming = false
+			m.recordConversationTurn()
 			m.showAnswer()
 		} else {
 			m.answerText += msg.token
@@ -314,6 +364,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case collectionsLoadedMsg:
 		m.collections = msg.collections
+		m.collectionCounts = msg.counts
 		m.collectionCursor = 0
 		if len(msg.collections) == 0 {
 			m.statusMsg = "No collections found"
@@ -332,6 +383,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updatePreviewContent()
 		return m, nil
 
+	case searchDebounceMsg:
+		// Only act on the latest keystroke and only while editing the search.
+		if msg.version != m.searchVersion || m.panel != PanelSearch {
+			return m, nil
+		}
+		if strings.TrimSpace(msg.query) == "" {
+			return m, m.loadDocuments()
+		}
+		return m, m.searchDocuments(msg.query, true)
+
+	case reindexDoneMsg:
+		m.indexing = false
+		if msg.err != nil {
+			m.statusMsg = "Index failed: " + msg.err.Error()
+			m.statusIsErr = true
+			return m, nil
+		}
+		m.statusMsg = fmt.Sprintf("Indexed %d documents (%d errors)", msg.indexed, msg.errs)
+		m.statusIsErr = false
+		return m, m.loadDocuments()
+
 	case errMsg:
 		m.statusMsg = msg.err.Error()
 		m.statusIsErr = true
@@ -349,7 +421,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if query == "" {
 			return m, m.loadDocuments()
 		}
-		return m, m.searchDocuments(query)
+		return m, m.searchDocuments(query, false)
 
 	case key.Matches(msg, m.keys.Down):
 		if len(m.results) > 0 {
@@ -361,7 +433,16 @@ func (m Model) updateSearch(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(msg)
-	return m, cmd
+
+	// Search-as-you-type: schedule a debounced search keyed by version so only
+	// the latest keystroke triggers a query.
+	m.searchVersion++
+	v := m.searchVersion
+	q := m.searchInput.Value()
+	debounce := tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return searchDebounceMsg{version: v, query: q}
+	})
+	return m, tea.Batch(cmd, debounce)
 }
 
 func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -387,6 +468,22 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.cursor++
 			m.updatePreviewContent()
 		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageDown):
+		m.moveCursor(m.pageStep())
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageUp):
+		m.moveCursor(-m.pageStep())
+		return m, nil
+
+	case key.Matches(msg, m.keys.HalfDown):
+		m.moveCursor(m.pageStep() / 2)
+		return m, nil
+
+	case key.Matches(msg, m.keys.HalfUp):
+		m.moveCursor(-m.pageStep() / 2)
 		return m, nil
 
 	case key.Matches(msg, m.keys.Enter):
@@ -456,7 +553,11 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if err != nil {
 				return errMsg{err}
 			}
-			return collectionsLoadedMsg{cols}
+			counts := make(map[string]int, len(cols))
+			for _, c := range cols {
+				counts[c.ID], _ = m.db.CountCollectionDocuments(ctx, c.ID)
+			}
+			return collectionsLoadedMsg{collections: cols, counts: counts}
 		}
 
 	case key.Matches(msg, m.keys.Collection):
@@ -473,9 +574,49 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusMsg = "Refreshing..."
 		m.statusIsErr = false
 		return m, m.loadDocuments()
+
+	case key.Matches(msg, m.keys.Index):
+		if m.reindex != nil && !m.indexing {
+			m.indexing = true
+			m.statusMsg = "Indexing..."
+			m.statusIsErr = false
+			return m, m.startReindex()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Filter):
+		m.sourceFilter = nextSourceFilter(m.sourceFilter)
+		if q := strings.TrimSpace(m.searchInput.Value()); q != "" {
+			return m, m.searchDocuments(q, false)
+		}
+		return m, m.loadDocuments()
 	}
 
 	return m, nil
+}
+
+// sourceFilterCycle is the order the 'f' key rotates through ("" = all).
+var sourceFilterCycle = []storage.Source{
+	"", storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail,
+	storage.SourceBrowser, storage.SourceClipboard,
+}
+
+func nextSourceFilter(current storage.Source) storage.Source {
+	for i, s := range sourceFilterCycle {
+		if s == current {
+			return sourceFilterCycle[(i+1)%len(sourceFilterCycle)]
+		}
+	}
+	return ""
+}
+
+// startReindex runs a full index pass in the background and reports completion.
+func (m *Model) startReindex() tea.Cmd {
+	reindex := m.reindex
+	return func() tea.Msg {
+		indexed, errs, err := reindex(context.Background())
+		return reindexDoneMsg{indexed: indexed, errs: errs, err: err}
+	}
 }
 
 func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -537,6 +678,12 @@ func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Enter):
 		if m.collectionCursor < len(m.collections) {
 			col := m.collections[m.collectionCursor]
+			// Smart collection: run the saved query instead of listing members.
+			if strings.TrimSpace(col.Query) != "" {
+				m.browsingCollections = false
+				m.searchInput.SetValue(col.Query)
+				return m, m.searchDocuments(col.Query, false)
+			}
 			return m, func() tea.Msg {
 				ctx := context.Background()
 				docs, err := m.db.GetCollectionDocuments(ctx, col.ID)
@@ -607,6 +754,13 @@ func (m Model) updateCollectInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+// stripHighlightTags removes Bleve's HTML highlight markers from a fragment.
+func stripHighlightTags(s string) string {
+	s = strings.ReplaceAll(s, "<mark>", "")
+	s = strings.ReplaceAll(s, "</mark>", "")
+	return s
+}
+
 // openFile opens a file with the system's default application.
 func openFile(path string) {
 	var cmd *exec.Cmd
@@ -650,6 +804,32 @@ func (m *Model) updateFocus() {
 	} else {
 		m.searchInput.Blur()
 	}
+}
+
+// pageStep returns the number of result rows that make up one page,
+// derived from the visible results height (each row is ~2 lines).
+func (m Model) pageStep() int {
+	step := (m.height - 8) / 2
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
+// moveCursor moves the results cursor by delta, clamping to range, and
+// refreshes the preview.
+func (m *Model) moveCursor(delta int) {
+	if len(m.results) == 0 {
+		return
+	}
+	m.cursor += delta
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor > len(m.results)-1 {
+		m.cursor = len(m.results) - 1
+	}
+	m.updatePreviewContent()
 }
 
 func (m *Model) updateViewportSize() {
@@ -700,10 +880,11 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	m.streamCh = ch
 
 	contexts := buildAnswerContexts(docs)
+	history := m.conversation
 
 	go func() {
 		defer close(ch)
-		m.llm.GenerateAnswerStream(ctx, question, contexts, func(token string, done bool) {
+		m.llm.GenerateAnswerStreamWithHistory(ctx, question, contexts, history, func(token string, done bool) {
 			select {
 			case ch <- streamChunkMsg{token: token, done: done}:
 			case <-ctx.Done():
@@ -712,6 +893,22 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	}()
 
 	return m.readNextChunk()
+}
+
+// recordConversationTurn appends the just-completed Q&A to the conversation
+// history (capped to the last few turns) so follow-up questions have context.
+func (m *Model) recordConversationTurn() {
+	if m.currentQuestion == "" || m.answerText == "" {
+		return
+	}
+	m.conversation = append(m.conversation, query.ConversationTurn{
+		Question: m.currentQuestion,
+		Answer:   m.answerText,
+	})
+	const maxTurns = 4
+	if len(m.conversation) > maxTurns {
+		m.conversation = m.conversation[len(m.conversation)-maxTurns:]
+	}
 }
 
 func (m *Model) answerContexts() []string {
@@ -780,6 +977,21 @@ func (m *Model) updatePreviewContent() {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+
+	// Show matching snippets (from search highlights) above the content.
+	if frags := m.highlights[doc.ID]; len(frags) > 0 {
+		sb.WriteString(styles.ResultSourceStyle.Render("Matches:"))
+		sb.WriteString("\n")
+		for i, frag := range frags {
+			if i >= 3 {
+				break
+			}
+			snippet := m.redactor.Redact(stripHighlightTags(frag))
+			sb.WriteString(styles.PreviewContentStyle.Render("… " + strings.TrimSpace(snippet) + " …"))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
 
 	content := doc.Content
 	if len(content) > 2000 {
@@ -863,6 +1075,9 @@ func (m Model) renderResults(width, height int) string {
 	}
 
 	if len(m.results) == 0 {
+		if m.searchInput.Value() == "" && m.reindex != nil {
+			return styles.ResultPreviewStyle.Render("No documents yet. Press i to index your sources, or / to search.")
+		}
 		return styles.ResultPreviewStyle.Render("No results. Press / to search.")
 	}
 
@@ -939,8 +1154,7 @@ func (m Model) renderCollectionsList(width, height int) string {
 
 	for i := start; i < end; i++ {
 		col := m.collections[i]
-		count, _ := m.db.CountCollectionDocuments(context.Background(), col.ID)
-		label := fmt.Sprintf("%s (%d docs)", col.Name, count)
+		label := fmt.Sprintf("%s (%d docs)", col.Name, m.collectionCounts[col.ID])
 		if len(label) > width-4 {
 			label = label[:width-7] + "..."
 		}
@@ -975,11 +1189,16 @@ func (m Model) renderStatusBar() string {
 		)
 	}
 
+	statusText := m.statusMsg
+	if m.sourceFilter != "" {
+		statusText = fmt.Sprintf("[%s] %s", m.sourceFilter, statusText)
+	}
+
 	var status string
 	if m.statusIsErr {
-		status = styles.StatusErrorStyle.Render(m.statusMsg)
+		status = styles.StatusErrorStyle.Render(statusText)
 	} else {
-		status = styles.StatusValueStyle.Render(m.statusMsg)
+		status = styles.StatusValueStyle.Render(statusText)
 	}
 
 	help := styles.HelpKeyStyle.Render("?") +
@@ -989,7 +1208,7 @@ func (m Model) renderStatusBar() string {
 		styles.HelpDescStyle.Render(" quit")
 
 	return styles.StatusBarStyle.Render(
-		status + strings.Repeat(" ", max(0, m.width-len(m.statusMsg)-len(" help • q quit")-10)) + help,
+		status + strings.Repeat(" ", max(0, m.width-lipgloss.Width(statusText)-lipgloss.Width(" help • q quit")-10)) + help,
 	)
 }
 
@@ -1010,7 +1229,9 @@ func (m Model) renderHelp() string {
 		{"Shift+Tab", "Cycle panels (reverse)"},
 		{"o", "Open in external app"},
 		{"y", "Copy path to clipboard"},
-		{"r", "Refresh index"},
+		{"r", "Refresh list"},
+		{"i", "Index sources now"},
+		{"f", "Cycle source filter"},
 		{"t", "Add tag"},
 		{"c", "Add to collection"},
 		{"C", "Browse collections"},

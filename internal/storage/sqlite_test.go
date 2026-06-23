@@ -41,6 +41,37 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+func TestMigrationVersionAndIdempotency(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	v, err := db.schemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != 1 {
+		t.Errorf("schemaVersion = %d, want 1", v)
+	}
+	db.Close()
+
+	// Re-opening an existing database must not error or change the version.
+	db2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer db2.Close()
+	v2, err := db2.schemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2 != 1 {
+		t.Errorf("schemaVersion after re-open = %d, want 1", v2)
+	}
+}
+
 func TestOpenInvalidPath(t *testing.T) {
 	_, err := Open("/nonexistent/path/to/db.sqlite")
 	if err == nil {
