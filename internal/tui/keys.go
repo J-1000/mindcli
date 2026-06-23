@@ -14,6 +14,7 @@ type KeyMap struct {
 	Open      key.Binding
 	Copy      key.Binding
 	Refresh   key.Binding
+	Index     key.Binding
 	Help      key.Binding
 	Quit      key.Binding
 	Escape    key.Binding
@@ -66,6 +67,10 @@ func DefaultKeyMap() KeyMap {
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
+		),
+		Index: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "index now"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),

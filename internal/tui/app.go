@@ -64,6 +64,10 @@ type Model struct {
 	streamCh            chan streamChunkMsg   // channel for streaming tokens
 	streamCancel        context.CancelFunc    // cancel in-flight stream
 
+	// reindex runs a full index pass; nil disables in-app indexing.
+	reindex  func(context.Context) (indexed int, errs int, err error)
+	indexing bool // true while an in-app index pass is running
+
 	// Dimensions
 	width  int
 	height int
@@ -73,8 +77,9 @@ type Model struct {
 }
 
 // New creates a new Model with the given database and search index.
-// The hybrid searcher and LLM client are optional; if nil, those features are skipped.
-func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient, redactor privacy.Redactor) Model {
+// The hybrid searcher and LLM client are optional; if nil, those features are
+// skipped. reindex, when non-nil, enables the in-app "index now" action.
+func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSearcher, llm *query.LLMClient, redactor privacy.Redactor, reindex func(context.Context) (int, int, error)) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search your knowledge base..."
 	ti.PromptStyle = styles.SearchPromptStyle
@@ -106,6 +111,7 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		panel:        PanelSearch,
 		keys:         DefaultKeyMap(),
 		redactor:     redactor,
+		reindex:      reindex,
 	}
 }
 
@@ -210,6 +216,12 @@ type collectionDocsLoadedMsg struct {
 type streamChunkMsg struct {
 	token string
 	done  bool
+}
+
+type reindexDoneMsg struct {
+	indexed int
+	errs    int
+	err     error
 }
 
 // Update handles messages and updates the model.
@@ -335,6 +347,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = false
 		m.updatePreviewContent()
 		return m, nil
+
+	case reindexDoneMsg:
+		m.indexing = false
+		if msg.err != nil {
+			m.statusMsg = "Index failed: " + msg.err.Error()
+			m.statusIsErr = true
+			return m, nil
+		}
+		m.statusMsg = fmt.Sprintf("Indexed %d documents (%d errors)", msg.indexed, msg.errs)
+		m.statusIsErr = false
+		return m, m.loadDocuments()
 
 	case errMsg:
 		m.statusMsg = msg.err.Error()
@@ -493,9 +516,27 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusMsg = "Refreshing..."
 		m.statusIsErr = false
 		return m, m.loadDocuments()
+
+	case key.Matches(msg, m.keys.Index):
+		if m.reindex != nil && !m.indexing {
+			m.indexing = true
+			m.statusMsg = "Indexing..."
+			m.statusIsErr = false
+			return m, m.startReindex()
+		}
+		return m, nil
 	}
 
 	return m, nil
+}
+
+// startReindex runs a full index pass in the background and reports completion.
+func (m *Model) startReindex() tea.Cmd {
+	reindex := m.reindex
+	return func() tea.Msg {
+		indexed, errs, err := reindex(context.Background())
+		return reindexDoneMsg{indexed: indexed, errs: errs, err: err}
+	}
 }
 
 func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -915,6 +956,9 @@ func (m Model) renderResults(width, height int) string {
 	}
 
 	if len(m.results) == 0 {
+		if m.searchInput.Value() == "" && m.reindex != nil {
+			return styles.ResultPreviewStyle.Render("No documents yet. Press i to index your sources, or / to search.")
+		}
 		return styles.ResultPreviewStyle.Render("No results. Press / to search.")
 	}
 
@@ -1062,7 +1106,8 @@ func (m Model) renderHelp() string {
 		{"Shift+Tab", "Cycle panels (reverse)"},
 		{"o", "Open in external app"},
 		{"y", "Copy path to clipboard"},
-		{"r", "Refresh index"},
+		{"r", "Refresh list"},
+		{"i", "Index sources now"},
 		{"t", "Add tag"},
 		{"c", "Add to collection"},
 		{"C", "Browse collections"},

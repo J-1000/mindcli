@@ -366,7 +366,29 @@ func runTUI() error {
 	defer s.Close()
 
 	redactor := buildRedactor(s.cfg)
-	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor)
+
+	// Build an indexer for the in-app "index now" action. Ensure a vector
+	// store exists so embeddings can be added on a first index.
+	vectors := s.vectors
+	if vectors == nil {
+		if vs, vErr := storage.NewVectorStore(filepath.Join(s.dataDir, "vectors.graph")); vErr == nil {
+			vs.SetModel(s.cfg.Embeddings.Model)
+			vectors = vs
+			defer vs.Close()
+		}
+	}
+	indexer := index.NewIndexer(s.db, s.bleve, vectors, s.embedder, s.cfg)
+	indexer.SetRedactor(redactor, s.cfg.Privacy.RedactContent)
+	reindex := func(ctx context.Context) (int, int, error) {
+		stats, err := indexer.IndexAll(ctx)
+		if err != nil {
+			return 0, 0, err
+		}
+		saveErr := indexer.SaveVectors()
+		return int(stats.IndexedFiles), int(stats.Errors), saveErr
+	}
+
+	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor, reindex)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
