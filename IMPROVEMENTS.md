@@ -198,36 +198,51 @@ The first five unblock or simplify the rest:
 
 ---
 
-## Quick checklist
+## Status
+
+All correctness bugs and polish items are implemented, along with most of the
+feature backlog. Remaining items are deliberately deferred (see below).
 
 ```
 Correctness
-[ ] #1  cache keys on model + dim-stamp vector store
-[ ] #2  implement or remove OpenAI provider
-[ ] #3  apply TimeFilter to results
-[ ] #4  watcher persists vectors (per-tick + on shutdown)
-[ ] #5  use ContentHash for change detection
-[ ] #6  handle rename/delete + prune pass
-[ ] #7  expand ~ in all config paths
-[ ] #8  index-time redaction (opt-in) + email content masking
-[ ] #9  stop swallowing embed-path errors
-[ ] #10 route CLI search through hybrid + results_limit
-[ ] #11 remove DeleteByPrefix no-op
-[ ] #12 fix Safari query determinism + rows.Err()
-[ ] #13 fix go vet context leak
+[x] #1  cache keys on model + dim-stamp vector store
+[x] #2  implement OpenAI provider (embeddings + chat)
+[x] #3  apply TimeFilter to results
+[x] #4  watcher persists vectors (per-batch + on shutdown)
+[x] #5  use ContentHash for change detection
+[x] #6  prune pass for deleted files (mindcli clean)
+[x] #7  expand ~ in all config paths (+ env overrides without a config file)
+[x] #8  index-time redaction (opt-in) + email content masking
+[x] #9  stop swallowing embed-path errors
+[x] #10 route CLI search through hybrid + results_limit
+[x] #11 remove DeleteByPrefix no-op
+[x] #12 fix Safari query determinism + rows.Err()
+[x] #13 fix go vet context leak
 
 Polish
-[ ] P1 openStores() refactor    [ ] P2 split TUI components
-[ ] P3 keymap bindings          [ ] P4 LICENSE
-[ ] P5 real migrations          [ ] P6 async collection load
-[ ] P7 lipgloss.Width padding   [ ] P8 storage dedup (optional)
+[x] P1 openStores() refactor    [~] P2 split TUI components (deferred)
+[x] P3 keymap bindings          [x] P4 LICENSE
+[x] P5 real migrations          [x] P6 async collection counts
+[x] P7 lipgloss.Width padding   [ ] P8 storage dedup (optional, not pursued)
 
 Testing
-[ ] T1 hybrid Search   [ ] T2 watcher   [ ] T3 parsers
-[ ] T4 benchmarks      [ ] T5 vet clean
+[x] T1 hybrid Search   [x] T2 watcher   [x] T3 parsers (pre-existing)
+[x] T4 benchmarks      [x] T5 vet clean
 
 Features
-[ ] T1: in-TUI index, snippets, search-as-you-type, doctor
-[ ] T2: smart collections, filters, follow-ups, stats, reindex/clean
-[ ] T3: more sources, OCR, citations, daemon
+[x] T1: in-TUI index, snippets, search-as-you-type, doctor
+[x] T2: smart collections, filters, follow-ups, stats, reindex/clean
+[~] T3: citations [x], daemon files [x]; more sources / OCR (deferred)
 ```
+
+## Deferred (with rationale)
+
+- **P2 — split the TUI into components.** Pure refactor with real regression
+  risk against a now feature-rich `app.go`, and no user-facing benefit. The
+  empty `components/` dir remains as the intended home if/when this is done.
+- **T3 — additional source types (docx, EPUB, RSS) and OCR.** Each adds a parser
+  and external dependency (OCR needs `tesseract`); shipping them half-built
+  would lower quality. Note: the markdown source already indexes arbitrary text
+  extensions via `sources.markdown.extensions`, covering org-mode/AsciiDoc/code.
+- **P8 — storage de-duplication.** Acceptable at personal scale; revisit only if
+  targeting very large corpora.
