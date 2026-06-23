@@ -101,17 +101,6 @@ func (v *VectorStore) Delete(key string) {
 	v.normalizeEmptyGraph()
 }
 
-// DeleteByPrefix removes all vectors whose keys start with the given prefix.
-// Useful for removing all chunks of a document (prefix = docID).
-func (v *VectorStore) DeleteByPrefix(prefix string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	// We need to collect keys first since we can't modify during iteration.
-	// The HNSW graph doesn't expose iteration, so we track keys externally
-	// or just use Lookup. For now, we rely on the caller knowing the keys.
-}
-
 func (v *VectorStore) normalizeEmptyGraph() {
 	// The underlying HNSW implementation can retain empty layers after deletes.
 	// Recreate the graph when it's logically empty to keep future Add/AddBatch safe.
