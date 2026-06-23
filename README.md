@@ -207,6 +207,17 @@ Natural language queries like `"what did I write about Go in my notes last week"
 
 When the query intent is "answer" or "summarize" and Ollama is available, MindCLI generates a RAG-style answer from the top search results with a confidence indicator (low/medium/high) based on source coverage and query overlap. When Ollama is not available, search gracefully falls back to BM25-only mode.
 
+## Performance
+
+Indexing runs a concurrent worker pool and skips unchanged files (by mtime,
+then content hash), so re-indexing is incremental. Search fuses BM25 and vector
+results with Reciprocal Rank Fusion. Benchmarks live alongside the code:
+
+```bash
+go test ./pkg/chunker/ -bench . -benchmem
+go test ./internal/query/ -bench . -benchmem
+```
+
 ## Development
 
 ```bash
