@@ -1,0 +1,21 @@
+# systemd user service for the MindCLI file watcher.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp init/systemd/mindcli.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mindcli.service
+#
+# Adjust ExecStart if mindcli is not on the default PATH.
+
+[Unit]
+Description=MindCLI file watcher (incremental re-indexing)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/mindcli watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
