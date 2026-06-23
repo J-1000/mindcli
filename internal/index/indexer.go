@@ -223,7 +223,12 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 
 				// Generate embeddings if available
 				if idx.vectors != nil && idx.embedder != nil {
-					idx.embedDocument(ctx, doc)
+					if err := idx.embedDocument(ctx, doc); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), file.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+					}
 				}
 
 				atomic.AddInt64(&indexed, 1)
@@ -285,7 +290,9 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 		}
 
 		if idx.vectors != nil && idx.embedder != nil {
-			idx.embedDocument(ctx, doc)
+			if err := idx.embedDocument(ctx, doc); err != nil {
+				return fmt.Errorf("embedding: %w", err)
+			}
 		}
 
 		return nil
@@ -359,17 +366,21 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 }
 
 // embedDocument chunks a document, generates embeddings, and stores them.
-func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
+// Errors are returned so callers can surface and count them rather than
+// silently leaving a document without vectors.
+func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) error {
 	// Delete old chunks and vectors for this document.
-	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil && idx.progress != nil {
-		idx.progress.OnError(string(doc.Source), doc.Path, fmt.Errorf("removing vectors: %w", err))
+	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil {
+		return fmt.Errorf("removing old vectors: %w", err)
 	}
-	idx.db.DeleteChunksByDocument(ctx, doc.ID)
+	if err := idx.db.DeleteChunksByDocument(ctx, doc.ID); err != nil {
+		return fmt.Errorf("removing old chunks: %w", err)
+	}
 
 	// Chunk the document content.
 	chunks := chunker.Split(doc.Content, chunker.DefaultOptions())
 	if len(chunks) == 0 {
-		return
+		return nil
 	}
 
 	// Collect chunk texts and keys.
@@ -383,11 +394,7 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 	// Generate embeddings in batch.
 	embeds, err := idx.embedder.EmbedBatch(ctx, texts)
 	if err != nil {
-		if idx.progress != nil {
-			idx.progress.OnError(string(doc.Source), doc.Path,
-				fmt.Errorf("generating embeddings: %w", err))
-		}
-		return
+		return fmt.Errorf("generating embeddings: %w", err)
 	}
 
 	// Store chunks in SQLite and vectors in HNSW.
@@ -399,10 +406,15 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) {
 			StartPos:   c.StartPos,
 			EndPos:     c.EndPos,
 		}
-		idx.db.InsertChunk(ctx, chunk)
+		if err := idx.db.InsertChunk(ctx, chunk); err != nil {
+			return fmt.Errorf("inserting chunk: %w", err)
+		}
 	}
 
-	idx.vectors.AddBatch(keys, embeds)
+	if err := idx.vectors.AddBatch(keys, embeds); err != nil {
+		return fmt.Errorf("adding vectors: %w", err)
+	}
+	return nil
 }
 
 func (idx *Indexer) deleteDocumentVectors(ctx context.Context, docID string) error {
