@@ -95,11 +95,19 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "valid openai provider",
+			name: "valid openai provider with key",
+			modify: func(c *Config) {
+				c.Embeddings.Provider = "openai"
+				c.Embeddings.OpenAIKey = "sk-test"
+			},
+			wantErr: false,
+		},
+		{
+			name: "openai provider missing key",
 			modify: func(c *Config) {
 				c.Embeddings.Provider = "openai"
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 	}
 

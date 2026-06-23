@@ -169,6 +169,9 @@ func (c *Config) Validate() error {
 	if c.Embeddings.Provider != "ollama" && c.Embeddings.Provider != "openai" {
 		return errors.New("embeddings.provider must be 'ollama' or 'openai'")
 	}
+	if c.Embeddings.Provider == "openai" && c.Embeddings.OpenAIKey == "" {
+		return errors.New("embeddings.openai_key is required when embeddings.provider is 'openai'")
+	}
 	return nil
 }
 

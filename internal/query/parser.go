@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -38,19 +39,39 @@ type AnswerConfidence struct {
 	Level string  // low, medium, high
 }
 
-// LLMClient calls a local Ollama instance for text generation.
+const defaultOpenAIBaseURL = "https://api.openai.com/v1"
+
+// LLMClient generates text via a local Ollama instance or the OpenAI API.
 type LLMClient struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	provider string // "ollama" | "openai"
+	baseURL  string
+	model    string
+	apiKey   string
+	client   *http.Client
 }
 
 // NewLLMClient creates a client for Ollama text generation.
 func NewLLMClient(baseURL, model string) *LLMClient {
 	return &LLMClient{
-		baseURL: baseURL,
-		model:   model,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		provider: "ollama",
+		baseURL:  baseURL,
+		model:    model,
+		client:   &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// NewOpenAILLMClient creates a client for OpenAI chat-completion generation.
+func NewOpenAILLMClient(apiKey, model string) *LLMClient {
+	baseURL := defaultOpenAIBaseURL
+	if env := os.Getenv("OPENAI_BASE_URL"); env != "" {
+		baseURL = env
+	}
+	return &LLMClient{
+		provider: "openai",
+		baseURL:  baseURL,
+		model:    model,
+		apiKey:   apiKey,
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -67,8 +88,11 @@ type ollamaGenerateResponse struct {
 	Done     bool   `json:"done"`
 }
 
-// Generate calls Ollama to generate text from a prompt.
+// Generate produces text from a prompt using the configured provider.
 func (c *LLMClient) Generate(ctx context.Context, prompt string) (string, error) {
+	if c.provider == "openai" {
+		return c.openAIGenerate(ctx, prompt)
+	}
 	reqBody := ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
@@ -277,6 +301,9 @@ func (c *LLMClient) GenerateAnswer(ctx context.Context, query string, contexts [
 
 // GenerateStream sends a streaming request and calls onChunk for each token.
 func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk func(token string, done bool)) error {
+	if c.provider == "openai" {
+		return c.openAIGenerateStream(ctx, prompt, onChunk)
+	}
 	reqBody := ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,

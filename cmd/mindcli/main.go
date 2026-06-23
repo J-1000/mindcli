@@ -213,8 +213,13 @@ func openStores(opts openOpts) (*stores, error) {
 	if opts.embedder {
 		s.openEmbedder(opts.indexing)
 	}
-	if opts.llm && cfg.Embeddings.Provider == "ollama" {
-		s.llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
+	if opts.llm {
+		switch cfg.Embeddings.Provider {
+		case "ollama":
+			s.llm = query.NewLLMClient(cfg.Embeddings.OllamaURL, cfg.Embeddings.LLMModel)
+		case "openai":
+			s.llm = query.NewOpenAILLMClient(cfg.Embeddings.OpenAIKey, cfg.Embeddings.LLMModel)
+		}
 	}
 	if opts.hybrid && s.vectors != nil && s.embedder != nil && s.vectors.Len() > 0 {
 		s.hybrid = query.NewHybridSearcher(s.bleve, s.vectors, s.embedder, s.db, cfg.Search.HybridWeight)
@@ -263,22 +268,30 @@ func (s *stores) openVectors(indexing bool) {
 // openEmbedder sets up the embedder for the configured provider. In indexing
 // mode it tests connectivity and disables embeddings if the backend is down.
 func (s *stores) openEmbedder(indexing bool) {
-	if s.cfg.Embeddings.Provider != "ollama" {
+	var base embeddings.Embedder
+	switch s.cfg.Embeddings.Provider {
+	case "ollama":
+		base = embeddings.NewOllamaEmbedder(s.cfg.Embeddings.OllamaURL, s.cfg.Embeddings.Model)
+	case "openai":
+		base = embeddings.NewOpenAIEmbedder(s.cfg.Embeddings.OpenAIKey, s.cfg.Embeddings.Model)
+	default:
 		return
 	}
-	ollamaEmb := embeddings.NewOllamaEmbedder(s.cfg.Embeddings.OllamaURL, s.cfg.Embeddings.Model)
+
 	cachePath := filepath.Join(s.dataDir, "embeddings.db")
-	if cached, err := embeddings.NewCachedEmbedder(ollamaEmb, cachePath, s.cfg.Embeddings.Model); err != nil {
+	if cached, err := embeddings.NewCachedEmbedder(base, cachePath, s.cfg.Embeddings.Model); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: embedding cache unavailable: %v\n", err)
-		s.embedder = ollamaEmb
+		s.embedder = base
 	} else {
 		s.cached = cached
 		s.embedder = cached
 	}
 
 	if indexing {
-		if _, err := ollamaEmb.Embed(context.Background(), "test"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: Ollama not available, skipping embeddings: %v\n", err)
+		// Probe the backend so a misconfigured provider degrades to BM25-only
+		// rather than failing every document.
+		if _, err := base.Embed(context.Background(), "test"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: embeddings unavailable (%s), skipping: %v\n", s.cfg.Embeddings.Provider, err)
 			s.embedder = nil
 		}
 	}
