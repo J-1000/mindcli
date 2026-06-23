@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jankowtf/mindcli/internal/config"
 	"github.com/jankowtf/mindcli/internal/index/sources"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
@@ -147,6 +149,56 @@ A note in a subdirectory.
 	}
 	if len(results) < 1 {
 		t.Error("expected at least 1 search result")
+	}
+}
+
+func TestIndexer_RedactsContentWhenEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	notesDir := filepath.Join(tmpDir, "notes")
+	dataDir := filepath.Join(tmpDir, "data")
+	os.MkdirAll(notesDir, 0755)
+	os.MkdirAll(dataDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(notesDir, "secret.md"),
+		[]byte("token=ABCDEF0123456789ABCDEF and some notes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := storage.Open(filepath.Join(dataDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchIdx, err := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchIdx.Close()
+
+	cfg := &config.Config{
+		Sources: config.SourcesConfig{Markdown: config.MarkdownSourceConfig{
+			Enabled: true, Paths: []string{notesDir}, Extensions: []string{".md"},
+		}},
+		Indexing: config.IndexingConfig{Workers: 1},
+	}
+
+	indexer := NewIndexer(db, searchIdx, nil, nil, cfg)
+	redactor, _ := privacy.NewRedactor([]string{`(?i)token=[A-Za-z0-9]{16,}`})
+	indexer.SetRedactor(redactor, true)
+
+	if _, err := indexer.IndexAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := db.GetDocumentByPath(context.Background(), filepath.Join(notesDir, "secret.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Content, "ABCDEF0123456789") {
+		t.Errorf("content was not redacted: %q", doc.Content)
+	}
+	if !strings.Contains(doc.Content, privacy.RedactionPlaceholder) {
+		t.Errorf("expected redaction placeholder in content: %q", doc.Content)
 	}
 }
 

@@ -93,9 +93,13 @@ type StorageConfig struct {
 	Path string `yaml:"path"`
 }
 
-// PrivacyConfig configures privacy controls for displaying content.
+// PrivacyConfig configures privacy controls.
 type PrivacyConfig struct {
 	RedactPatterns []string `yaml:"redact_patterns"`
+	// RedactContent, when true, applies RedactPatterns to document content and
+	// previews at index time (not just on display), so secrets are never
+	// stored in the database or search index.
+	RedactContent bool `yaml:"redact_content"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -341,6 +345,7 @@ func applyEnvOverrides(cfg *Config) {
 
 	// Privacy
 	setCSVFromEnv("MINDCLI_PRIVACY_REDACT_PATTERNS", &cfg.Privacy.RedactPatterns)
+	setBoolFromEnv("MINDCLI_PRIVACY_REDACT_CONTENT", &cfg.Privacy.RedactContent)
 }
 
 func setStringFromEnv(name string, dst *string) {

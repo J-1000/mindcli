@@ -11,6 +11,7 @@ import (
 	"github.com/jankowtf/mindcli/internal/config"
 	"github.com/jankowtf/mindcli/internal/embeddings"
 	"github.com/jankowtf/mindcli/internal/index/sources"
+	"github.com/jankowtf/mindcli/internal/privacy"
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 	"github.com/jankowtf/mindcli/pkg/chunker"
@@ -26,6 +27,9 @@ type Indexer struct {
 	workers  int
 	progress ProgressReporter
 	force    bool // when true, re-index even unchanged files (and re-embed)
+
+	redactor      privacy.Redactor
+	redactContent bool
 }
 
 // ProgressReporter receives progress updates during indexing.
@@ -112,6 +116,24 @@ func (idx *Indexer) SetProgressReporter(pr ProgressReporter) {
 // Use this for a full rebuild, e.g. after changing the embedding model.
 func (idx *Indexer) SetForce(force bool) {
 	idx.force = force
+}
+
+// SetRedactor configures index-time redaction. When redactContent is true and
+// the redactor has patterns, document content and previews are redacted before
+// they are stored or indexed.
+func (idx *Indexer) SetRedactor(r privacy.Redactor, redactContent bool) {
+	idx.redactor = r
+	idx.redactContent = redactContent
+}
+
+// applyRedaction redacts a document's content and preview in place when
+// index-time redaction is enabled.
+func (idx *Indexer) applyRedaction(doc *storage.Document) {
+	if !idx.redactContent || !idx.redactor.Enabled() {
+		return
+	}
+	doc.Content = idx.redactor.Redact(doc.Content)
+	doc.Preview = idx.redactor.Redact(doc.Preview)
 }
 
 // IndexAll indexes all documents from all configured sources.
@@ -206,6 +228,8 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
+				idx.applyRedaction(doc)
+
 				// Content-hash check: if the bytes are identical despite a
 				// newer mtime, refresh metadata but skip the expensive
 				// re-embedding (existing vectors are still valid).
@@ -289,6 +313,7 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 		if err != nil {
 			return fmt.Errorf("parsing: %w", err)
 		}
+		idx.applyRedaction(doc)
 
 		if err := idx.db.UpsertDocument(ctx, doc); err != nil {
 			return fmt.Errorf("storing: %w", err)

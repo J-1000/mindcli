@@ -384,6 +384,7 @@ func runIndex(pathsOverride string, watch, force bool) error {
 
 	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
 	indexer.SetForce(force)
+	indexer.SetRedactor(buildRedactor(s.cfg), s.cfg.Privacy.RedactContent)
 	indexer.SetProgressReporter(&consoleProgressReporter{})
 
 	ctx := context.Background()
@@ -432,6 +433,7 @@ func runWatch() error {
 	defer s.Close()
 
 	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
+	indexer.SetRedactor(buildRedactor(s.cfg), s.cfg.Privacy.RedactContent)
 	return startWatching(indexer, s.cfg)
 }
 
