@@ -25,6 +25,7 @@ type Indexer struct {
 	sources  []sources.Source
 	workers  int
 	progress ProgressReporter
+	force    bool // when true, re-index even unchanged files (and re-embed)
 }
 
 // ProgressReporter receives progress updates during indexing.
@@ -107,6 +108,12 @@ func (idx *Indexer) SetProgressReporter(pr ProgressReporter) {
 	idx.progress = pr
 }
 
+// SetForce controls whether unchanged files are re-indexed (and re-embedded).
+// Use this for a full rebuild, e.g. after changing the embedding model.
+func (idx *Indexer) SetForce(force bool) {
+	idx.force = force
+}
+
 // IndexAll indexes all documents from all configured sources.
 func (idx *Indexer) IndexAll(ctx context.Context) (*Stats, error) {
 	stats := &Stats{
@@ -182,15 +189,11 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					idx.progress.OnProgress(string(src.Name()), int(current), len(allFiles), file.Path)
 				}
 
-				// Check if file needs indexing (compare hash)
-				existing, err := idx.db.GetDocumentByPath(ctx, file.Path)
-				if err == nil && existing != nil {
-					// File exists, check if modified
-					if existing.ModifiedAt.Unix() >= file.ModifiedAt {
-						// Not modified, skip
-						atomic.AddInt64(&indexed, 1)
-						continue
-					}
+				// Fast path: skip files whose mtime hasn't advanced.
+				existing, _ := idx.db.GetDocumentByPath(ctx, file.Path)
+				if !idx.force && existing != nil && existing.ModifiedAt.Unix() >= file.ModifiedAt {
+					atomic.AddInt64(&indexed, 1)
+					continue
 				}
 
 				// Parse document
@@ -202,6 +205,11 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					atomic.AddInt64(&errors, 1)
 					continue
 				}
+
+				// Content-hash check: if the bytes are identical despite a
+				// newer mtime, refresh metadata but skip the expensive
+				// re-embedding (existing vectors are still valid).
+				unchanged := !idx.force && existing != nil && existing.ContentHash == doc.ContentHash
 
 				// Store in database
 				if err := idx.db.UpsertDocument(ctx, doc); err != nil {
@@ -221,8 +229,9 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
-				// Generate embeddings if available
-				if idx.vectors != nil && idx.embedder != nil {
+				// Generate embeddings if available (skipped when content is
+				// unchanged, since existing vectors remain valid).
+				if idx.vectors != nil && idx.embedder != nil && !unchanged {
 					if err := idx.embedDocument(ctx, doc); err != nil {
 						if idx.progress != nil {
 							idx.progress.OnError(string(src.Name()), file.Path, err)

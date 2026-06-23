@@ -43,12 +43,18 @@ func run() error {
 	indexCmd := flag.NewFlagSet("index", flag.ExitOnError)
 	indexPaths := indexCmd.String("paths", "", "Comma-separated paths to index (overrides config)")
 	indexWatch := indexCmd.Bool("watch", false, "Watch for file changes after indexing")
+	indexForce := indexCmd.Bool("force", false, "Re-index everything, ignoring unchanged-file checks")
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "index":
 			indexCmd.Parse(os.Args[2:])
-			return runIndex(*indexPaths, *indexWatch)
+			return runIndex(*indexPaths, *indexWatch, *indexForce)
+		case "reindex":
+			fs := flag.NewFlagSet("reindex", flag.ExitOnError)
+			paths := fs.String("paths", "", "Comma-separated paths to index (overrides config)")
+			fs.Parse(os.Args[2:])
+			return runIndex(*paths, false, true)
 		case "watch":
 			return runWatch()
 		case "search":
@@ -90,6 +96,7 @@ func printUsage() {
 Usage:
   mindcli              Start the TUI
   mindcli index        Index configured sources
+  mindcli reindex      Re-index everything (ignores unchanged-file checks)
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
   mindcli export "..." Export search results (--format json|csv|markdown)
@@ -104,12 +111,14 @@ Usage:
 Index options:
   -paths string        Comma-separated paths to index (overrides config)
   -watch               Watch for file changes after indexing
+  -force               Re-index everything, ignoring unchanged-file checks
 
 Examples:
   mindcli                                      # Start TUI
   mindcli index                                # Index all configured sources
   mindcli index -paths ~/notes                 # Index specific paths
   mindcli index -watch                         # Index then watch for changes
+  mindcli reindex                              # Full rebuild (e.g. after model change)
   mindcli search "Go concurrency"               # Search without TUI
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
@@ -345,7 +354,7 @@ func runTUI() error {
 	return nil
 }
 
-func runIndex(pathsOverride string, watch bool) error {
+func runIndex(pathsOverride string, watch, force bool) error {
 	s, err := openStores(openOpts{vectors: true, embedder: true, indexing: true})
 	if err != nil {
 		return err
@@ -358,6 +367,7 @@ func runIndex(pathsOverride string, watch bool) error {
 	}
 
 	indexer := index.NewIndexer(s.db, s.bleve, s.vectors, s.embedder, s.cfg)
+	indexer.SetForce(force)
 	indexer.SetProgressReporter(&consoleProgressReporter{})
 
 	ctx := context.Background()
