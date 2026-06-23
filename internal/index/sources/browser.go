@@ -287,6 +287,9 @@ func readChromeHistory(dbPath string) ([]historyEntry, error) {
 			Kind:       "history",
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading chrome history: %w", err)
+	}
 
 	return entries, nil
 }
@@ -336,6 +339,9 @@ func readFirefoxHistory(dbPath string) ([]historyEntry, error) {
 			Kind:       "history",
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading firefox history: %w", err)
+	}
 
 	return entries, nil
 }
@@ -348,13 +354,16 @@ func readSafariHistory(dbPath string) ([]historyEntry, error) {
 	}
 	defer db.Close()
 
+	// Group by URL and use the latest visit. SQLite's MAX() with bare columns
+	// guarantees hv.title comes from the row holding MAX(hv.visit_time), so the
+	// title and timestamp are taken from the most recent visit deterministically.
 	rows, err := db.Query(`
-		SELECT hi.url, hv.title, hi.visit_count
+		SELECT hi.url, hv.title, hi.visit_count, MAX(hv.visit_time) AS visit_time
 		FROM history_items hi
-		LEFT JOIN history_visits hv ON hi.id = hv.history_item
+		JOIN history_visits hv ON hi.id = hv.history_item
 		WHERE hv.title IS NOT NULL AND hv.title != ''
 		GROUP BY hi.url
-		ORDER BY hv.visit_time DESC
+		ORDER BY visit_time DESC
 		LIMIT 5000
 	`)
 	if err != nil {
@@ -366,18 +375,29 @@ func readSafariHistory(dbPath string) ([]historyEntry, error) {
 	for rows.Next() {
 		var url, title string
 		var visitCount int
+		var visitTime sql.NullFloat64
 
-		if err := rows.Scan(&url, &title, &visitCount); err != nil {
+		if err := rows.Scan(&url, &title, &visitCount, &visitTime); err != nil {
 			continue
+		}
+
+		var t time.Time
+		if visitTime.Valid {
+			// Safari stores time as CFAbsoluteTime: seconds since 2001-01-01.
+			t = time.Unix(int64(visitTime.Float64)+978307200, 0)
 		}
 
 		entries = append(entries, historyEntry{
 			URL:        url,
 			Title:      title,
 			VisitCount: visitCount,
+			LastVisit:  t,
 			Browser:    "safari",
 			Kind:       "history",
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading safari history: %w", err)
 	}
 
 	return entries, nil
