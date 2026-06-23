@@ -50,9 +50,65 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-// migrate runs database migrations.
+// migration is an ordered, versioned set of schema statements applied in a
+// single transaction. Append new migrations with the next version number;
+// never edit an already-released migration.
+type migration struct {
+	version int
+	stmts   []string
+}
+
+// migrate applies any migrations newer than the database's recorded schema
+// version, each in its own transaction.
 func (d *DB) migrate() error {
-	migrations := []string{
+	if _, err := d.db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`); err != nil {
+		return fmt.Errorf("creating schema_version table: %w", err)
+	}
+
+	current, err := d.schemaVersion()
+	if err != nil {
+		return err
+	}
+
+	for _, m := range migrationList() {
+		if m.version <= current {
+			continue
+		}
+		tx, err := d.db.Begin()
+		if err != nil {
+			return fmt.Errorf("starting migration %d: %w", m.version, err)
+		}
+		for _, stmt := range m.stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("applying migration %d: %w", m.version, err)
+			}
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (?)`, m.version); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("recording migration %d: %w", m.version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration %d: %w", m.version, err)
+		}
+	}
+
+	return nil
+}
+
+// schemaVersion returns the highest applied migration version (0 if none).
+func (d *DB) schemaVersion() (int, error) {
+	var version int
+	err := d.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
+	if err != nil {
+		return 0, fmt.Errorf("reading schema version: %w", err)
+	}
+	return version, nil
+}
+
+// migrationList returns all migrations in version order.
+func migrationList() []migration {
+	return []migration{{version: 1, stmts: []string{
 		`CREATE TABLE IF NOT EXISTS documents (
 			id TEXT PRIMARY KEY,
 			source TEXT NOT NULL,
@@ -101,19 +157,7 @@ func (d *DB) migrate() error {
 			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_collection_documents_doc ON collection_documents(document_id)`,
-		`CREATE TABLE IF NOT EXISTS schema_version (
-			version INTEGER PRIMARY KEY
-		)`,
-		`INSERT OR IGNORE INTO schema_version (version) VALUES (1)`,
-	}
-
-	for _, m := range migrations {
-		if _, err := d.db.Exec(m); err != nil {
-			return fmt.Errorf("executing migration: %w", err)
-		}
-	}
-
-	return nil
+	}}}
 }
 
 // InsertDocument inserts a new document into the database.
