@@ -3,6 +3,7 @@ set -eu
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
+  chmod -R u+w "${TMP_DIR}" 2>/dev/null || true
   rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT INT TERM
