@@ -4,15 +4,15 @@
   launchd agent for the MindCLI file watcher (macOS).
 
   Install:
-    cp init/launchd/com.github.jankowtf.mindcli.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.github.jankowtf.mindcli.plist
+    cp init/launchd/com.github.J-1000.mindcli.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.github.J-1000.mindcli.plist
 
   Adjust the mindcli path below if it is not installed at /usr/local/bin.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.github.jankowtf.mindcli</string>
+    <string>com.github.J-1000.mindcli</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/mindcli</string>
