@@ -9,12 +9,12 @@ import (
 
 func TestParseMarkdown(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		wantTitle   string
-		wantTags    []string
-		wantLinks   []string
-		wantFM      map[string]string
+		name         string
+		content      string
+		wantTitle    string
+		wantTags     []string
+		wantLinks    []string
+		wantFM       map[string]string
 		wantHeadings []string
 	}{
 		{
@@ -63,8 +63,8 @@ More content.
 			wantHeadings: nil,
 		},
 		{
-			name: "multiple tags same name",
-			content: `Content with #mytag here and #mytag again and #othertag.`,
+			name:     "multiple tags same name",
+			content:  `Content with #mytag here and #mytag again and #othertag.`,
 			wantTags: []string{"mytag", "othertag"},
 		},
 		{
@@ -79,7 +79,7 @@ Also see [Google](https://google.com) and [GitHub](https://github.com).`,
 			},
 		},
 		{
-			name: "code blocks should not extract tags",
+			name:    "code blocks should not extract tags",
 			content: "# Title\n\nReal #tag here.\n\n```go\n// #notag\nfunc main() {}\n```\n",
 			// Note: Our simple parser doesn't handle code blocks for tags yet
 			// This test documents current behavior
@@ -122,30 +122,30 @@ Also see [Google](https://google.com) and [GitHub](https://github.com).`,
 
 func TestCreatePreview(t *testing.T) {
 	tests := []struct {
-		name    string
-		content string
-		maxLen  int
-		wantContains string
+		name            string
+		content         string
+		maxLen          int
+		wantContains    string
 		wantNotContains []string
 	}{
 		{
-			name:    "removes markdown formatting",
-			content: "**Bold** and *italic* and `code`.",
-			maxLen:  100,
-			wantContains: "Bold and italic and",
+			name:            "removes markdown formatting",
+			content:         "**Bold** and *italic* and `code`.",
+			maxLen:          100,
+			wantContains:    "Bold and italic and",
 			wantNotContains: []string{"**", "*", "`"},
 		},
 		{
-			name:    "removes links but keeps text",
-			content: "Check [this link](https://example.com) out.",
-			maxLen:  100,
-			wantContains: "Check this link out",
+			name:            "removes links but keeps text",
+			content:         "Check [this link](https://example.com) out.",
+			maxLen:          100,
+			wantContains:    "Check this link out",
 			wantNotContains: []string{"https://", "[", "]", "(", ")"},
 		},
 		{
-			name:    "truncates long content",
-			content: "This is a very long piece of content that should be truncated at some point because it exceeds the maximum length.",
-			maxLen:  50,
+			name:         "truncates long content",
+			content:      "This is a very long piece of content that should be truncated at some point because it exceeds the maximum length.",
+			maxLen:       50,
 			wantContains: "...",
 		},
 	}

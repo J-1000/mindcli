@@ -41,12 +41,12 @@ func TestDocumentMetadataJSON(t *testing.T) {
 
 func TestDocumentSetMetadataFromJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		wantErr  bool
-		wantNil  bool
-		wantKey  string
-		wantVal  string
+		name    string
+		json    string
+		wantErr bool
+		wantNil bool
+		wantKey string
+		wantVal string
 	}{
 		{
 			name:    "empty string",

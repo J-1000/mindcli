@@ -21,9 +21,9 @@ func TestLooksLikePassword(t *testing.T) {
 		{"Passw0rd!", true},
 		{"xK9#mQ2!nL", true},
 		{"simple", false},
-		{"hello world", false},     // has space
-		{"line1\nline2", false},    // multiline
-		{"ab", false},              // too short
+		{"hello world", false},           // has space
+		{"line1\nline2", false},          // multiline
+		{"ab", false},                    // too short
 		{"ALL_UPPERCASE_LETTERS", false}, // only 2 classes
 		{"this is a normal sentence with some words", false},
 	}
