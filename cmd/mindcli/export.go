@@ -35,7 +35,6 @@ func exportJSON(w io.Writer, results storage.SearchResults, redactor privacy.Red
 func exportCSV(w io.Writer, results storage.SearchResults, redactor privacy.Redactor) error {
 	_ = redactor
 	cw := csv.NewWriter(w)
-	defer cw.Flush()
 	if err := cw.Write([]string{"title", "path", "source", "score", "tags", "modified_at"}); err != nil {
 		return fmt.Errorf("writing CSV header: %w", err)
 	}
@@ -51,6 +50,7 @@ func exportCSV(w io.Writer, results storage.SearchResults, redactor privacy.Reda
 			return fmt.Errorf("writing CSV row: %w", err)
 		}
 	}
+	cw.Flush()
 	return cw.Error()
 }
 
