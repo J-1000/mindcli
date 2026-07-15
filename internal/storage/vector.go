@@ -42,7 +42,7 @@ func NewVectorStore(path string) (*VectorStore, error) {
 		}
 	}
 
-	g.Graph.Distance = hnsw.CosineDistance
+	g.Distance = hnsw.CosineDistance
 
 	v := &VectorStore{graph: g, path: path}
 	v.loadMeta()

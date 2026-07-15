@@ -1140,7 +1140,7 @@ func (m Model) renderResults(width, height int) string {
 
 	// Show scroll indicator
 	if len(m.results) > visibleCount {
-		sb.WriteString(fmt.Sprintf("\n%d/%d", m.cursor+1, len(m.results)))
+		fmt.Fprintf(&sb, "\n%d/%d", m.cursor+1, len(m.results))
 	}
 
 	return sb.String()

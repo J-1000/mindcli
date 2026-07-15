@@ -291,12 +291,12 @@ func buildRAGPromptWithHistory(question string, contexts []string, history []Con
 		if i >= 5 {
 			break
 		}
-		contextStr.WriteString(fmt.Sprintf("--- Document %d ---\n%s\n\n", i+1, ctx))
+		fmt.Fprintf(&contextStr, "--- Document %d ---\n%s\n\n", i+1, ctx)
 	}
 
 	var historyStr strings.Builder
 	for _, turn := range history {
-		historyStr.WriteString(fmt.Sprintf("Q: %s\nA: %s\n\n", turn.Question, turn.Answer))
+		fmt.Fprintf(&historyStr, "Q: %s\nA: %s\n\n", turn.Question, turn.Answer)
 	}
 	conversation := ""
 	if historyStr.Len() > 0 {
