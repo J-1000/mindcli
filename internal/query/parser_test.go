@@ -192,7 +192,10 @@ func TestGenerateStream(t *testing.T) {
 
 		enc := json.NewEncoder(w)
 		for _, chunk := range chunks {
-			enc.Encode(chunk)
+			if err := enc.Encode(chunk); err != nil {
+				t.Errorf("encoding stream chunk: %v", err)
+				return
+			}
 			flusher.Flush()
 		}
 	}))
@@ -230,16 +233,22 @@ func TestGenerateStream(t *testing.T) {
 
 func TestGenerateStreamCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		flusher, _ := w.(http.Flusher)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 
 		// Send many chunks - the client should cancel before all are consumed.
 		enc := json.NewEncoder(w)
 		for i := 0; i < 1000; i++ {
-			enc.Encode(ollamaGenerateResponse{Response: "tok ", Done: false})
+			if err := enc.Encode(ollamaGenerateResponse{Response: "tok ", Done: false}); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
-		enc.Encode(ollamaGenerateResponse{Response: "", Done: true})
+		_ = enc.Encode(ollamaGenerateResponse{Response: "", Done: true})
 	}))
 	defer server.Close()
 
