@@ -17,18 +17,42 @@ import (
 	"github.com/jankowtf/mindcli/internal/storage"
 )
 
+func mustIndexerTestSucceed(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func closeIndexerTestDB(t *testing.T, db *storage.DB) {
+	t.Helper()
+	if err := db.Close(); err != nil {
+		t.Errorf("closing database: %v", err)
+	}
+}
+
+func closeIndexerTestSearch(t *testing.T, index *search.BleveIndex) {
+	t.Helper()
+	if err := index.Close(); err != nil {
+		t.Errorf("closing search index: %v", err)
+	}
+}
+
+func closeIndexerTestVectors(t *testing.T, vectors *storage.VectorStore) {
+	t.Helper()
+	if err := vectors.Close(); err != nil {
+		t.Errorf("closing vector store: %v", err)
+	}
+}
+
 func TestIndexer_IndexAll(t *testing.T) {
 	// Create temp directories
-	tmpDir, err := os.MkdirTemp("", "indexer-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	notesDir := filepath.Join(tmpDir, "notes")
 	dataDir := filepath.Join(tmpDir, "data")
-	os.MkdirAll(notesDir, 0755)
-	os.MkdirAll(dataDir, 0755)
+	mustIndexerTestSucceed(t, os.MkdirAll(notesDir, 0755))
+	mustIndexerTestSucceed(t, os.MkdirAll(dataDir, 0755))
 
 	// Create test markdown files
 	files := map[string]string{
@@ -59,7 +83,7 @@ A note in a subdirectory.
 
 	for name, content := range files {
 		path := filepath.Join(notesDir, name)
-		os.MkdirAll(filepath.Dir(path), 0755)
+		mustIndexerTestSucceed(t, os.MkdirAll(filepath.Dir(path), 0755))
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			t.Fatalf("writing file: %v", err)
 		}
@@ -71,7 +95,7 @@ A note in a subdirectory.
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	// Set up search index
 	indexPath := filepath.Join(dataDir, "test.bleve")
@@ -79,7 +103,7 @@ A note in a subdirectory.
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	// Create config
 	cfg := &config.Config{
@@ -156,8 +180,8 @@ func TestIndexer_RedactsContentWhenEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	notesDir := filepath.Join(tmpDir, "notes")
 	dataDir := filepath.Join(tmpDir, "data")
-	os.MkdirAll(notesDir, 0755)
-	os.MkdirAll(dataDir, 0755)
+	mustIndexerTestSucceed(t, os.MkdirAll(notesDir, 0755))
+	mustIndexerTestSucceed(t, os.MkdirAll(dataDir, 0755))
 
 	if err := os.WriteFile(filepath.Join(notesDir, "secret.md"),
 		[]byte("token=ABCDEF0123456789ABCDEF and some notes"), 0644); err != nil {
@@ -168,12 +192,12 @@ func TestIndexer_RedactsContentWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 	searchIdx, err := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	cfg := &config.Config{
 		Sources: config.SourcesConfig{Markdown: config.MarkdownSourceConfig{
@@ -203,16 +227,12 @@ func TestIndexer_RedactsContentWhenEnabled(t *testing.T) {
 }
 
 func TestIndexer_IncrementalIndexing(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "indexer-incremental-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	notesDir := filepath.Join(tmpDir, "notes")
 	dataDir := filepath.Join(tmpDir, "data")
-	os.MkdirAll(notesDir, 0755)
-	os.MkdirAll(dataDir, 0755)
+	mustIndexerTestSucceed(t, os.MkdirAll(notesDir, 0755))
+	mustIndexerTestSucceed(t, os.MkdirAll(dataDir, 0755))
 
 	// Create initial file
 	filePath := filepath.Join(notesDir, "note.md")
@@ -225,13 +245,13 @@ func TestIndexer_IncrementalIndexing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	searchIdx, err := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	cfg := &config.Config{
 		Sources: config.SourcesConfig{
@@ -283,28 +303,30 @@ func TestIndexer_IncrementalIndexing(t *testing.T) {
 }
 
 func TestIndexer_Cancellation(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "indexer-cancel-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	notesDir := filepath.Join(tmpDir, "notes")
 	dataDir := filepath.Join(tmpDir, "data")
-	os.MkdirAll(notesDir, 0755)
-	os.MkdirAll(dataDir, 0755)
+	mustIndexerTestSucceed(t, os.MkdirAll(notesDir, 0755))
+	mustIndexerTestSucceed(t, os.MkdirAll(dataDir, 0755))
 
 	// Create many files
 	for i := 0; i < 50; i++ {
 		path := filepath.Join(notesDir, "note"+string(rune('a'+i%26))+".md")
-		os.WriteFile(path, []byte("# Note "+string(rune('a'+i%26))), 0644)
+		mustIndexerTestSucceed(t, os.WriteFile(path, []byte("# Note "+string(rune('a'+i%26))), 0644))
 	}
 
-	db, _ := storage.Open(filepath.Join(dataDir, "test.db"))
-	defer db.Close()
+	db, err := storage.Open(filepath.Join(dataDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestDB(t, db)
 
-	searchIdx, _ := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
-	defer searchIdx.Close()
+	searchIdx, err := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	cfg := &config.Config{
 		Sources: config.SourcesConfig{
@@ -339,19 +361,19 @@ func TestIndexer_RemoveFileDeletesVectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	vectors, err := storage.NewVectorStore(filepath.Join(tmpDir, "vectors.graph"))
 	if err != nil {
 		t.Fatalf("creating vector store: %v", err)
 	}
-	defer vectors.Close()
+	defer closeIndexerTestVectors(t, vectors)
 
 	cfg := &config.Config{Indexing: config.IndexingConfig{Workers: 1}}
 	indexer := NewIndexer(db, searchIdx, vectors, nil, cfg)
@@ -385,7 +407,7 @@ func TestIndexer_RemoveFileDeletesVectors(t *testing.T) {
 	if err := db.InsertChunk(ctx, chunk); err != nil {
 		t.Fatalf("inserting chunk: %v", err)
 	}
-	vectors.Add(chunk.ID, []float32{1, 0})
+	mustIndexerTestSucceed(t, vectors.Add(chunk.ID, []float32{1, 0}))
 	if got := vectors.Len(); got != 1 {
 		t.Fatalf("vector count before remove = %d, want 1", got)
 	}
@@ -405,19 +427,19 @@ func TestIndexer_EmbedDocumentRemovesStaleVectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	vectors, err := storage.NewVectorStore(filepath.Join(tmpDir, "vectors.graph"))
 	if err != nil {
 		t.Fatalf("creating vector store: %v", err)
 	}
-	defer vectors.Close()
+	defer closeIndexerTestVectors(t, vectors)
 
 	cfg := &config.Config{Indexing: config.IndexingConfig{Workers: 1}}
 	embedder := &testEmbedder{}
@@ -454,12 +476,12 @@ func TestIndexer_EmbedDocumentRemovesStaleVectors(t *testing.T) {
 	if err := db.InsertChunk(ctx, staleChunk); err != nil {
 		t.Fatalf("inserting stale chunk: %v", err)
 	}
-	vectors.Add(staleChunk.ID, []float32{9, 9})
+	mustIndexerTestSucceed(t, vectors.Add(staleChunk.ID, []float32{9, 9}))
 	if vectors.Len() != 1 {
 		t.Fatalf("expected 1 stale vector before embed, got %d", vectors.Len())
 	}
 
-	indexer.embedDocument(ctx, doc)
+	mustIndexerTestSucceed(t, indexer.embedDocument(ctx, doc))
 
 	chunks, err := db.GetChunksByDocument(ctx, doc.ID)
 	if err != nil {
@@ -481,13 +503,13 @@ func TestIndexer_IndexFile_UsesStatPathWithoutScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	src := &mockSource{
 		name:      storage.SourceMarkdown,
@@ -523,13 +545,13 @@ func TestIndexer_IndexFile_FallsBackToSourceScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 
 	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
 	if err != nil {
 		t.Fatalf("creating search index: %v", err)
 	}
-	defer searchIdx.Close()
+	defer closeIndexerTestSearch(t, searchIdx)
 
 	src := &mockSource{
 		name:      storage.SourceClipboard,
