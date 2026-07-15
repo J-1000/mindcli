@@ -92,7 +92,7 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	if err != nil {
 		return nil, fmt.Errorf("openai request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

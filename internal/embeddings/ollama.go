@@ -84,7 +84,7 @@ func (o *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	if err != nil {
 		return nil, fmt.Errorf("ollama request failed (is Ollama running at %s?): %w", o.baseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

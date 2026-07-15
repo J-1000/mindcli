@@ -65,7 +65,7 @@ func (c *LLMClient) openAIGenerate(ctx context.Context, prompt string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("openai request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -93,7 +93,7 @@ func (c *LLMClient) openAIGenerateStream(ctx context.Context, prompt string, onC
 	if err != nil {
 		return fmt.Errorf("openai request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
