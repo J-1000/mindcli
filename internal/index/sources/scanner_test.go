@@ -126,16 +126,14 @@ func TestScanner_Scan(t *testing.T) {
 }
 
 func TestScanner_Cancellation(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "scanner-cancel-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create many files
 	for i := 0; i < 100; i++ {
 		path := filepath.Join(tmpDir, "note"+string(rune('a'+i%26))+".md")
-		os.WriteFile(path, []byte("content"), 0644)
+		if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+			t.Fatalf("writing test file: %v", err)
+		}
 	}
 
 	scanner := NewScanner(ScanConfig{
