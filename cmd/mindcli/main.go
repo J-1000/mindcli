@@ -48,12 +48,12 @@ func run() error {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "index":
-			indexCmd.Parse(os.Args[2:])
+			_ = indexCmd.Parse(os.Args[2:])
 			return runIndex(*indexPaths, *indexWatch, *indexForce)
 		case "reindex":
 			fs := flag.NewFlagSet("reindex", flag.ExitOnError)
 			paths := fs.String("paths", "", "Comma-separated paths to index (overrides config)")
-			fs.Parse(os.Args[2:])
+			_ = fs.Parse(os.Args[2:])
 			return runIndex(*paths, false, true)
 		case "watch":
 			return runWatch()
@@ -208,7 +208,7 @@ func openStores(opts openOpts) (*stores, error) {
 	indexPath := filepath.Join(dataDir, "search.bleve")
 	bleve, err := search.NewBleveIndex(indexPath)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("opening search index: %w", err)
 	}
 	s.bleve = bleve
@@ -265,7 +265,7 @@ func (s *stores) openVectors(indexing bool) {
 		return
 	}
 	if vs.Len() == 0 {
-		vs.Close()
+		_ = vs.Close()
 		return
 	}
 	s.vectors = vs
@@ -309,16 +309,24 @@ func (s *stores) Close() {
 		return
 	}
 	if s.cached != nil {
-		s.cached.Close()
+		if err := s.cached.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing embedding cache: %v\n", err)
+		}
 	}
 	if s.vectors != nil {
-		s.vectors.Close()
+		if err := s.vectors.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing vector store: %v\n", err)
+		}
 	}
 	if s.bleve != nil {
-		s.bleve.Close()
+		if err := s.bleve.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing search index: %v\n", err)
+		}
 	}
 	if s.db != nil {
-		s.db.Close()
+		if err := s.db.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing database: %v\n", err)
+		}
 	}
 }
 
@@ -374,7 +382,7 @@ func runTUI() error {
 		if vs, vErr := storage.NewVectorStore(filepath.Join(s.dataDir, "vectors.graph")); vErr == nil {
 			vs.SetModel(s.cfg.Embeddings.Model)
 			vectors = vs
-			defer vs.Close()
+			defer func() { _ = vs.Close() }()
 		}
 	}
 	indexer := index.NewIndexer(s.db, s.bleve, vectors, s.embedder, s.cfg)
@@ -713,7 +721,7 @@ func runCollection(args []string) error {
 		fs := flag.NewFlagSet("collection-create", flag.ExitOnError)
 		queryStr := fs.String("query", "", "Saved search query")
 		desc := fs.String("description", "", "Collection description")
-		fs.Parse(args[2:])
+		_ = fs.Parse(args[2:])
 
 		col := &storage.Collection{Name: name, Query: *queryStr, Description: *desc}
 		if err := db.CreateCollection(ctx, col); err != nil {
@@ -1059,7 +1067,7 @@ func printPathSize(label, path string) {
 	}
 	var size int64
 	if info.IsDir() {
-		filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
 			if err == nil && !d.IsDir() {
 				if fi, e := d.Info(); e == nil {
 					size += fi.Size()
@@ -1138,7 +1146,7 @@ func runDoctor() error {
 	vectorPath := filepath.Join(dataDir, "vectors.graph")
 	if _, err := os.Stat(vectorPath); err == nil {
 		if vs, err := storage.NewVectorStore(vectorPath); err == nil {
-			defer vs.Close()
+			defer func() { _ = vs.Close() }()
 			switch {
 			case vs.Model() != "" && vs.Model() != cfg.Embeddings.Model:
 				fmt.Printf("x vector store model %q != configured %q (run 'mindcli reindex')\n",
