@@ -1,17 +1,23 @@
 package storage
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
+
+func closeTestVectorStore(t *testing.T, store *VectorStore) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Errorf("closing vector store: %v", err)
+	}
+}
 
 func TestVectorStoreDimMismatch(t *testing.T) {
 	store, err := NewVectorStore(filepath.Join(t.TempDir(), "test.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeTestVectorStore(t, store)
 
 	if err := store.Add("a", []float32{1, 0, 0}); err != nil {
 		t.Fatalf("first add: %v", err)
@@ -41,13 +47,15 @@ func TestVectorStoreMetaPersist(t *testing.T) {
 	if err := store.Save(); err != nil {
 		t.Fatal(err)
 	}
-	store.Close()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	reopened, err := NewVectorStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer closeTestVectorStore(t, reopened)
 	if reopened.Model() != "nomic-embed-text" {
 		t.Errorf("Model() = %q, want nomic-embed-text", reopened.Model())
 	}
@@ -57,23 +65,19 @@ func TestVectorStoreMetaPersist(t *testing.T) {
 }
 
 func TestVectorStoreAddAndSearch(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-vector-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	store, err := NewVectorStore(filepath.Join(tmpDir, "test.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeTestVectorStore(t, store)
 
 	// Add some vectors.
-	store.Add("doc1:0", []float32{1.0, 0.0, 0.0})
-	store.Add("doc1:1", []float32{0.9, 0.1, 0.0})
-	store.Add("doc2:0", []float32{0.0, 1.0, 0.0})
-	store.Add("doc3:0", []float32{0.0, 0.0, 1.0})
+	mustSucceed(t, store.Add("doc1:0", []float32{1.0, 0.0, 0.0}))
+	mustSucceed(t, store.Add("doc1:1", []float32{0.9, 0.1, 0.0}))
+	mustSucceed(t, store.Add("doc2:0", []float32{0.0, 1.0, 0.0}))
+	mustSucceed(t, store.Add("doc3:0", []float32{0.0, 0.0, 1.0}))
 
 	if store.Len() != 4 {
 		t.Errorf("expected 4 vectors, got %d", store.Len())
@@ -99,11 +103,7 @@ func TestVectorStoreAddAndSearch(t *testing.T) {
 }
 
 func TestVectorStorePersistence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-vector-persist-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	path := filepath.Join(tmpDir, "persist.graph")
 
@@ -112,9 +112,12 @@ func TestVectorStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Add("key1", []float32{1.0, 0.0, 0.0})
-	store.Add("key2", []float32{0.0, 1.0, 0.0})
+	mustSucceed(t, store.Add("key1", []float32{1.0, 0.0, 0.0}))
+	mustSucceed(t, store.Add("key2", []float32{0.0, 1.0, 0.0}))
 	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +126,7 @@ func TestVectorStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store2.Close()
+	defer closeTestVectorStore(t, store2)
 
 	if store2.Len() != 2 {
 		t.Errorf("expected 2 vectors after reload, got %d", store2.Len())
@@ -140,20 +143,16 @@ func TestVectorStorePersistence(t *testing.T) {
 }
 
 func TestVectorStoreDelete(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-vector-delete-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	store, err := NewVectorStore(filepath.Join(tmpDir, "test.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeTestVectorStore(t, store)
 
-	store.Add("key1", []float32{1.0, 0.0})
-	store.Add("key2", []float32{0.0, 1.0})
+	mustSucceed(t, store.Add("key1", []float32{1.0, 0.0}))
+	mustSucceed(t, store.Add("key2", []float32{0.0, 1.0}))
 
 	if store.Len() != 2 {
 		t.Fatalf("expected 2, got %d", store.Len())
@@ -167,17 +166,13 @@ func TestVectorStoreDelete(t *testing.T) {
 }
 
 func TestVectorStoreAddBatch(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-vector-batch-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	store, err := NewVectorStore(filepath.Join(tmpDir, "test.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeTestVectorStore(t, store)
 
 	keys := []string{"a", "b", "c"}
 	vecs := [][]float32{
@@ -185,7 +180,7 @@ func TestVectorStoreAddBatch(t *testing.T) {
 		{0.0, 1.0, 0.0},
 		{0.0, 0.0, 1.0},
 	}
-	store.AddBatch(keys, vecs)
+	mustSucceed(t, store.AddBatch(keys, vecs))
 
 	if store.Len() != 3 {
 		t.Errorf("expected 3 after batch add, got %d", store.Len())
@@ -193,17 +188,13 @@ func TestVectorStoreAddBatch(t *testing.T) {
 }
 
 func TestVectorStoreEmptySearch(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-vector-empty-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	store, err := NewVectorStore(filepath.Join(tmpDir, "test.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer closeTestVectorStore(t, store)
 
 	results := store.Search([]float32{1.0, 0.0}, 5)
 	if results != nil {
