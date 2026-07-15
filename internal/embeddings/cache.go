@@ -36,7 +36,7 @@ func NewCachedEmbedder(inner Embedder, cachePath, model string) (*CachedEmbedder
 			embedding BLOB NOT NULL
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("creating cache table: %w", err)
 	}
 
@@ -65,7 +65,9 @@ func (c *CachedEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	}
 
 	// Store in cache.
-	c.put(hash, emb)
+	if err := c.put(hash, emb); err != nil {
+		return nil, err
+	}
 	return emb, nil
 }
 
@@ -96,7 +98,9 @@ func (c *CachedEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		for j, emb := range embeddings {
 			idx := uncachedIndices[j]
 			results[idx] = emb
-			c.put(c.cacheKey(uncachedTexts[j]), emb)
+			if err := c.put(c.cacheKey(uncachedTexts[j]), emb); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -127,9 +131,12 @@ func (c *CachedEmbedder) get(hash string) ([]float32, error) {
 	return decodeEmbedding(blob), nil
 }
 
-func (c *CachedEmbedder) put(hash string, embedding []float32) {
+func (c *CachedEmbedder) put(hash string, embedding []float32) error {
 	blob := encodeEmbedding(embedding)
-	c.db.Exec("INSERT OR REPLACE INTO embedding_cache (content_hash, embedding) VALUES (?, ?)", hash, blob)
+	if _, err := c.db.Exec("INSERT OR REPLACE INTO embedding_cache (content_hash, embedding) VALUES (?, ?)", hash, blob); err != nil {
+		return fmt.Errorf("caching embedding: %w", err)
+	}
+	return nil
 }
 
 // encodeEmbedding converts float32 slice to a compact binary representation.
