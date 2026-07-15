@@ -36,30 +36,46 @@ func exportCSV(w io.Writer, results storage.SearchResults, redactor privacy.Reda
 	_ = redactor
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	cw.Write([]string{"title", "path", "source", "score", "tags", "modified_at"})
+	if err := cw.Write([]string{"title", "path", "source", "score", "tags", "modified_at"}); err != nil {
+		return fmt.Errorf("writing CSV header: %w", err)
+	}
 	for _, r := range results {
-		cw.Write([]string{
+		if err := cw.Write([]string{
 			r.Document.Title,
 			r.Document.Path,
 			string(r.Document.Source),
 			fmt.Sprintf("%.4f", r.Score),
 			r.Document.Metadata["tags"],
 			r.Document.ModifiedAt.Format(time.RFC3339),
-		})
+		}); err != nil {
+			return fmt.Errorf("writing CSV row: %w", err)
+		}
 	}
 	return cw.Error()
 }
 
 func exportMarkdown(w io.Writer, results storage.SearchResults, redactor privacy.Redactor) error {
 	for i, r := range results {
-		fmt.Fprintf(w, "## %d. %s\n\n", i+1, r.Document.Title)
-		fmt.Fprintf(w, "- **Source:** %s\n", r.Document.Source)
-		fmt.Fprintf(w, "- **Path:** %s\n", r.Document.Path)
-		fmt.Fprintf(w, "- **Score:** %.4f\n", r.Score)
-		if tags := r.Document.Metadata["tags"]; tags != "" {
-			fmt.Fprintf(w, "- **Tags:** %s\n", tags)
+		if _, err := fmt.Fprintf(w, "## %d. %s\n\n", i+1, r.Document.Title); err != nil {
+			return err
 		}
-		fmt.Fprintf(w, "\n%s\n\n---\n\n", redactor.Redact(r.Document.Preview))
+		if _, err := fmt.Fprintf(w, "- **Source:** %s\n", r.Document.Source); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "- **Path:** %s\n", r.Document.Path); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "- **Score:** %.4f\n", r.Score); err != nil {
+			return err
+		}
+		if tags := r.Document.Metadata["tags"]; tags != "" {
+			if _, err := fmt.Fprintf(w, "- **Tags:** %s\n", tags); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "\n%s\n\n---\n\n", redactor.Redact(r.Document.Preview)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

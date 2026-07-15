@@ -544,7 +544,7 @@ func runExport(args []string) error {
 	format := fs.String("format", "json", "Output format: json, csv, markdown")
 	output := fs.String("output", "", "Output file (default: stdout)")
 	limit := fs.Int("limit", 50, "Maximum number of results")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	queryStr := strings.Join(fs.Args(), " ")
 	if queryStr == "" {
@@ -577,24 +577,35 @@ func runExport(args []string) error {
 
 	// Determine output writer.
 	var w io.Writer = os.Stdout
+	var outputFile *os.File
 	if *output != "" {
 		f, err := os.Create(*output)
 		if err != nil {
 			return fmt.Errorf("creating output file: %w", err)
 		}
-		defer f.Close()
+		outputFile = f
 		w = f
 	}
 
+	var exportErr error
 	switch *format {
 	case "json":
-		return exportJSON(w, results, redactor)
+		exportErr = exportJSON(w, results, redactor)
 	case "csv":
-		return exportCSV(w, results, redactor)
+		exportErr = exportCSV(w, results, redactor)
 	case "markdown":
-		return exportMarkdown(w, results, redactor)
+		exportErr = exportMarkdown(w, results, redactor)
 	}
-	return nil
+	if outputFile != nil {
+		if exportErr != nil {
+			_ = outputFile.Close()
+			return exportErr
+		}
+		if err := outputFile.Close(); err != nil {
+			return fmt.Errorf("closing output file: %w", err)
+		}
+	}
+	return exportErr
 }
 
 func runTag(args []string) error {
