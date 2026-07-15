@@ -93,8 +93,6 @@ func extractPDFText(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening PDF: %w", err)
 	}
-	defer f.Close()
-
 	var sb strings.Builder
 	numPages := r.NumPage()
 
@@ -112,6 +110,9 @@ func extractPDFText(path string) (string, error) {
 		if i < numPages {
 			sb.WriteString("\n\n")
 		}
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("closing PDF: %w", err)
 	}
 
 	return strings.TrimSpace(sb.String()), nil
