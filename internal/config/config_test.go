@@ -273,11 +273,7 @@ func TestPrivacyDefaults(t *testing.T) {
 }
 
 func TestLLMModelYAMLRoundTrip(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-config-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Write a config with a custom LLM model
 	configContent := []byte(`embeddings:
@@ -340,11 +336,7 @@ func TestClipboardSourceDefaults(t *testing.T) {
 }
 
 func TestLoadAppliesEnvOverrides(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-config-env-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Use an isolated config file to avoid machine-specific config affecting the test.
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -440,11 +432,7 @@ func TestLoadAppliesEnvOverridesWithoutConfigFile(t *testing.T) {
 }
 
 func TestConfigPathAndDirFromEnv(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-config-path-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	customDir := filepath.Join(tmpDir, "mycfg")
 	customPath := filepath.Join(customDir, "custom.yaml")
