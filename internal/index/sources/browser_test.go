@@ -81,11 +81,7 @@ func TestBuildBrowserDocument(t *testing.T) {
 }
 
 func TestReadChromeBookmarks(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "browser-bookmarks-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	bookmarksPath := filepath.Join(tmpDir, "Bookmarks")
 	data := `{
