@@ -2,7 +2,6 @@ package embeddings
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,11 +82,7 @@ func TestCachedEmbedderModelScoping(t *testing.T) {
 }
 
 func TestCachedEmbedder(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-cache-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	mock := &mockEmbedder{dim: 128}
 	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"), "test-model")
@@ -142,11 +137,7 @@ func TestCachedEmbedder(t *testing.T) {
 }
 
 func TestCachedEmbedderBatch(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-cache-batch-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	mock := &mockEmbedder{dim: 64}
 	cache, err := NewCachedEmbedder(mock, filepath.Join(tmpDir, "cache.db"), "test-model")
