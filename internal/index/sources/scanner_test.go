@@ -9,11 +9,7 @@ import (
 
 func TestScanner_Scan(t *testing.T) {
 	// Create temp directory with test files
-	tmpDir, err := os.MkdirTemp("", "scanner-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create test structure
 	files := map[string]string{
