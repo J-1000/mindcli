@@ -15,9 +15,15 @@ func TestOpenAIGenerateStream(t *testing.T) {
 			t.Errorf("Authorization = %q, want Bearer sk-test", got)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		if _, err := fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"); err != nil {
+			t.Errorf("writing stream response: %v", err)
+		}
+		if _, err := fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"); err != nil {
+			t.Errorf("writing stream response: %v", err)
+		}
+		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			t.Errorf("writing stream response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

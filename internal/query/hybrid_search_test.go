@@ -64,19 +64,31 @@ func newHybridTestStores(t *testing.T) (*storage.DB, *search.BleveIndex, *storag
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("closing database: %v", err)
+		}
+	})
 
 	bleve, err := search.NewBleveIndex(filepath.Join(dir, "test.bleve"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { bleve.Close() })
+	t.Cleanup(func() {
+		if err := bleve.Close(); err != nil {
+			t.Errorf("closing search index: %v", err)
+		}
+	})
 
 	vectors, err := storage.NewVectorStore(filepath.Join(dir, "vectors.graph"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { vectors.Close() })
+	t.Cleanup(func() {
+		if err := vectors.Close(); err != nil {
+			t.Errorf("closing vector store: %v", err)
+		}
+	})
 
 	ctx := context.Background()
 	now := time.Now()
