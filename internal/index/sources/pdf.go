@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/storage"
 	"github.com/ledongthuc/pdf"
 )
 

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/privacy"
+	"github.com/J-1000/mindcli/internal/query"
+	"github.com/J-1000/mindcli/internal/storage"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jankowtf/mindcli/internal/privacy"
-	"github.com/jankowtf/mindcli/internal/query"
-	"github.com/jankowtf/mindcli/internal/storage"
 )
 
 func setupTestDB(t *testing.T) (*storage.DB, func()) {

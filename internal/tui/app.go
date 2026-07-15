@@ -8,17 +8,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/privacy"
+	"github.com/J-1000/mindcli/internal/query"
+	"github.com/J-1000/mindcli/internal/search"
+	"github.com/J-1000/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/tui/styles"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jankowtf/mindcli/internal/privacy"
-	"github.com/jankowtf/mindcli/internal/query"
-	"github.com/jankowtf/mindcli/internal/search"
-	"github.com/jankowtf/mindcli/internal/storage"
-	"github.com/jankowtf/mindcli/internal/tui/styles"
 )
 
 // Panel represents which panel is focused.

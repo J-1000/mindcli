@@ -8,13 +8,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/jankowtf/mindcli/internal/config"
-	"github.com/jankowtf/mindcli/internal/embeddings"
-	"github.com/jankowtf/mindcli/internal/index/sources"
-	"github.com/jankowtf/mindcli/internal/privacy"
-	"github.com/jankowtf/mindcli/internal/search"
-	"github.com/jankowtf/mindcli/internal/storage"
-	"github.com/jankowtf/mindcli/pkg/chunker"
+	"github.com/J-1000/mindcli/internal/config"
+	"github.com/J-1000/mindcli/internal/embeddings"
+	"github.com/J-1000/mindcli/internal/index/sources"
+	"github.com/J-1000/mindcli/internal/privacy"
+	"github.com/J-1000/mindcli/internal/search"
+	"github.com/J-1000/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/pkg/chunker"
 )
 
 // Indexer orchestrates document indexing from various sources.

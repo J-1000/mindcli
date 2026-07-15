@@ -1,4 +1,4 @@
-module github.com/jankowtf/mindcli
+module github.com/J-1000/mindcli
 
 go 1.25.12
 

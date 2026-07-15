@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jankowtf/mindcli/internal/privacy"
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/privacy"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 func testResults() storage.SearchResults {

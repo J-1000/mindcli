@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jankowtf/mindcli/internal/embeddings"
-	"github.com/jankowtf/mindcli/internal/search"
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/embeddings"
+	"github.com/J-1000/mindcli/internal/search"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 // HybridSearcher combines BM25 full-text search with vector similarity search.

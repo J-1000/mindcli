@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jankowtf/mindcli/internal/query"
-	"github.com/jankowtf/mindcli/internal/search"
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/query"
+	"github.com/J-1000/mindcli/internal/search"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 func closeTestDB(t *testing.T, db *storage.DB) {

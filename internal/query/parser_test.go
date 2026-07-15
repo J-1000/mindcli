@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 func TestFilterByTime(t *testing.T) {

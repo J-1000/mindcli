@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 func TestEmailSourceName(t *testing.T) {

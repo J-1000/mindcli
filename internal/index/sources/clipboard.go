@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/storage"
 	"github.com/atotto/clipboard"
-	"github.com/jankowtf/mindcli/internal/storage"
 )
 
 // ClipboardSource indexes clipboard history.

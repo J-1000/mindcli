@@ -13,15 +13,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/config"
+	"github.com/J-1000/mindcli/internal/embeddings"
+	"github.com/J-1000/mindcli/internal/index"
+	"github.com/J-1000/mindcli/internal/privacy"
+	"github.com/J-1000/mindcli/internal/query"
+	"github.com/J-1000/mindcli/internal/search"
+	"github.com/J-1000/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jankowtf/mindcli/internal/config"
-	"github.com/jankowtf/mindcli/internal/embeddings"
-	"github.com/jankowtf/mindcli/internal/index"
-	"github.com/jankowtf/mindcli/internal/privacy"
-	"github.com/jankowtf/mindcli/internal/query"
-	"github.com/jankowtf/mindcli/internal/search"
-	"github.com/jankowtf/mindcli/internal/storage"
-	"github.com/jankowtf/mindcli/internal/tui"
 )
 
 // Build-time variables set via ldflags.

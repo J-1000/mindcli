@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 // QueryIntent represents what the user wants to do.

@@ -4,7 +4,7 @@ package sources
 import (
 	"context"
 
-	"github.com/jankowtf/mindcli/internal/storage"
+	"github.com/J-1000/mindcli/internal/storage"
 )
 
 // Source represents a document source that can be indexed.
