@@ -34,7 +34,7 @@ mkdir -p ~/.local/bin
 install -m 0755 bin/mindcli ~/.local/bin/mindcli
 ```
 
-**Requirements:** Go 1.25+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
+**Requirements:** Go 1.25.12+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
 
 Release binaries and a Homebrew formula are not published yet. Until the first
 release exists, use the source build above.
