@@ -11,7 +11,7 @@ require (
 	github.com/coder/hnsw v0.6.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
-	github.com/mattn/go-sqlite3 v1.14.33
+	github.com/mattn/go-sqlite3 v1.14.48
 	gopkg.in/yaml.v3 v3.0.1
 )
 
