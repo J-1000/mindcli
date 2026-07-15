@@ -271,10 +271,17 @@ func TestGenerateStreamCancellation(t *testing.T) {
 
 func TestGenerateAnswerStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		flusher, _ := w.(http.Flusher)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		enc := json.NewEncoder(w)
-		enc.Encode(ollamaGenerateResponse{Response: "Answer here", Done: true})
+		if err := enc.Encode(ollamaGenerateResponse{Response: "Answer here", Done: true}); err != nil {
+			t.Errorf("encoding stream response: %v", err)
+			return
+		}
 		flusher.Flush()
 	}))
 	defer server.Close()
