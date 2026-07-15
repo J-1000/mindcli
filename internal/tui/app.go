@@ -1183,7 +1183,7 @@ func (m Model) renderCollectionsList(width, height int) string {
 	}
 
 	if len(m.collections) > visibleCount {
-		sb.WriteString(fmt.Sprintf("\n%d/%d", m.collectionCursor+1, len(m.collections)))
+		fmt.Fprintf(&sb, "\n%d/%d", m.collectionCursor+1, len(m.collections))
 	}
 
 	return sb.String()
