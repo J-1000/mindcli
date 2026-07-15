@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -95,9 +96,9 @@ func (e *EmailSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) 
 			}
 
 			// Walk directory for email files
-			filepath.WalkDir(path, func(fp string, d os.DirEntry, err error) error {
+			walkErr := filepath.WalkDir(path, func(fp string, d os.DirEntry, err error) error {
 				if err != nil {
-					return nil
+					return err
 				}
 				select {
 				case <-ctx.Done():
@@ -128,6 +129,13 @@ func (e *EmailSource) Scan(ctx context.Context) (<-chan FileInfo, <-chan error) 
 				}
 				return nil
 			})
+			if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
+				select {
+				case errs <- walkErr:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 
@@ -183,8 +191,6 @@ func (e *EmailSource) parseMbox(file FileInfo) (*storage.Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening mbox: %w", err)
 	}
-	defer f.Close()
-
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 
@@ -219,6 +225,13 @@ func (e *EmailSource) parseMbox(file FileInfo) (*storage.Document, error) {
 		if err == nil {
 			messages = append(messages, msg)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("reading mbox: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("closing mbox: %w", err)
 	}
 
 	return buildEmailDocument(file, messages, e.maskSensitivePreview), nil
@@ -255,11 +268,13 @@ func (e *EmailSource) parseSingleEmail(file FileInfo) (*storage.Document, error)
 	if err != nil {
 		return nil, fmt.Errorf("opening email: %w", err)
 	}
-	defer f.Close()
-
 	msg, err := parseEmailMessage(f)
 	if err != nil {
+		_ = f.Close()
 		return nil, fmt.Errorf("parsing email: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("closing email: %w", err)
 	}
 
 	return buildEmailDocument(file, []emailMessage{msg}, e.maskSensitivePreview), nil
