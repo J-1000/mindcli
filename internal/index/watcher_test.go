@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,19 +21,19 @@ func TestWatcher_IndexesAndRemoves(t *testing.T) {
 	tmp := t.TempDir()
 	notesDir := filepath.Join(tmp, "notes")
 	dataDir := filepath.Join(tmp, "data")
-	os.MkdirAll(notesDir, 0755)
-	os.MkdirAll(dataDir, 0755)
+	mustIndexerTestSucceed(t, os.MkdirAll(notesDir, 0755))
+	mustIndexerTestSucceed(t, os.MkdirAll(dataDir, 0755))
 
 	db, err := storage.Open(filepath.Join(dataDir, "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer closeIndexerTestDB(t, db)
 	bleve, err := search.NewBleveIndex(filepath.Join(dataDir, "test.bleve"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bleve.Close()
+	defer closeIndexerTestSearch(t, bleve)
 
 	cfg := &config.Config{
 		Sources:  config.SourcesConfig{Markdown: config.MarkdownSourceConfig{Enabled: true, Paths: []string{notesDir}, Extensions: []string{".md"}}},
@@ -47,8 +48,14 @@ func TestWatcher_IndexesAndRemoves(t *testing.T) {
 	watcher.debounceTime = 100 * time.Millisecond // speed up the test
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go watcher.Start(ctx)
+	watchErr := make(chan error, 1)
+	go func() { watchErr <- watcher.Start(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-watchErr; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("watcher stopped with error: %v", err)
+		}
+	}()
 	time.Sleep(100 * time.Millisecond) // let the watcher register
 
 	notePath := filepath.Join(notesDir, "note.md")
@@ -88,7 +95,10 @@ func eventually(t *testing.T, timeout time.Duration, cond func() bool) bool {
 }
 
 func TestExpandWatchPath(t *testing.T) {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		input string
@@ -108,11 +118,7 @@ func TestExpandWatchPath(t *testing.T) {
 }
 
 func TestWatcherCreation(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "watcher-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create watcher without a real indexer (just test creation).
 	watcher, err := NewWatcher(nil, []string{tmpDir})
@@ -124,5 +130,7 @@ func TestWatcherCreation(t *testing.T) {
 		t.Error("expected non-nil fsnotify watcher")
 	}
 
-	watcher.watcher.Close()
+	if err := watcher.watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
