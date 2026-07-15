@@ -155,19 +155,10 @@ func TestConfigPath(t *testing.T) {
 }
 
 func TestEnsureConfigDir(t *testing.T) {
-	// Save original and restore after test
-	origConfigDir, _ := os.UserConfigDir()
+	tmpDir := t.TempDir()
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Join(tmpDir, "mindcli"))
 
-	// Create a temp directory for testing
-	tmpDir, err := os.MkdirTemp("", "mindcli-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// We can't easily override UserConfigDir, so just test that EnsureConfigDir
-	// doesn't error on the real config dir
-	err = EnsureConfigDir()
+	err := EnsureConfigDir()
 	if err != nil {
 		t.Errorf("EnsureConfigDir() error = %v", err)
 	}
@@ -177,16 +168,10 @@ func TestEnsureConfigDir(t *testing.T) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Errorf("EnsureConfigDir() did not create directory: %s", dir)
 	}
-
-	_ = origConfigDir // silence unused warning
 }
 
 func TestConfigDataDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	cfg := Default()
 	cfg.Storage.Path = filepath.Join(tmpDir, "data")
@@ -207,11 +192,7 @@ func TestConfigDataDir(t *testing.T) {
 }
 
 func TestConfigDatabasePath(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	cfg := Default()
 	cfg.Storage.Path = filepath.Join(tmpDir, "data")
