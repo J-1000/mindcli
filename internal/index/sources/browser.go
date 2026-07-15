@@ -439,7 +439,7 @@ func readFirefoxBookmarks(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying firefox bookmarks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []historyEntry
 	for rows.Next() {
