@@ -95,7 +95,9 @@ func (w *Watcher) handleEvent(ctx context.Context, event fsnotify.Event) {
 	// For new directories, start watching them.
 	if event.Op&fsnotify.Create != 0 {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-			w.addRecursive(event.Name)
+			if err := w.addRecursive(event.Name); err != nil {
+				log.Printf("watching new directory %s: %v", event.Name, err)
+			}
 			return
 		}
 	}
