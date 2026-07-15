@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,20 @@ import (
 	"github.com/jankowtf/mindcli/internal/search"
 	"github.com/jankowtf/mindcli/internal/storage"
 )
+
+func closeTestDB(t *testing.T, db *storage.DB) {
+	t.Helper()
+	if err := db.Close(); err != nil {
+		t.Errorf("closing database: %v", err)
+	}
+}
+
+func closeTestIndex(t *testing.T, index *search.BleveIndex) {
+	t.Helper()
+	if err := index.Close(); err != nil {
+		t.Errorf("closing search index: %v", err)
+	}
+}
 
 func TestVersionVariables(t *testing.T) {
 	// Build-time variables should have default values when not injected.
@@ -28,17 +43,28 @@ func TestVersionVariables(t *testing.T) {
 func TestPrintUsage(t *testing.T) {
 	// Capture stdout
 	old := os.Stdout
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.Stdout = w
+	defer func() { os.Stdout = old }()
 
 	printUsage()
 
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	os.Stdout = old
 
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output := string(buf)
 
 	expectedSubstrings := []string{
 		"MindCLI",
@@ -100,11 +126,7 @@ func TestConsoleProgressReporter(t *testing.T) {
 
 // TestSearchWithTempIndex tests the search flow end-to-end using a temp DB and Bleve index.
 func TestSearchWithTempIndex(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-main-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Set up database
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -112,7 +134,7 @@ func TestSearchWithTempIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer closeTestDB(t, db)
 
 	// Set up Bleve index
 	indexPath := filepath.Join(tmpDir, "search.bleve")
@@ -120,7 +142,7 @@ func TestSearchWithTempIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create search index: %v", err)
 	}
-	defer searchIndex.Close()
+	defer closeTestIndex(t, searchIndex)
 
 	// Insert test documents
 	ctx := context.Background()
@@ -160,25 +182,21 @@ func TestSearchWithTempIndex(t *testing.T) {
 
 // TestSearchWithSourceFilter verifies the query parser integrates with search for source filtering.
 func TestSearchWithSourceFilter(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-filter-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := storage.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer closeTestDB(t, db)
 
 	indexPath := filepath.Join(tmpDir, "search.bleve")
 	searchIndex, err := search.NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("Failed to create search index: %v", err)
 	}
-	defer searchIndex.Close()
+	defer closeTestIndex(t, searchIndex)
 
 	ctx := context.Background()
 	now := time.Now()
@@ -209,7 +227,10 @@ func TestSearchWithSourceFilter(t *testing.T) {
 
 	// Should only find the email doc
 	for _, r := range results {
-		doc, _ := db.GetDocument(ctx, r.ID)
+		doc, err := db.GetDocument(ctx, r.ID)
+		if err != nil {
+			t.Fatalf("GetDocument() error = %v", err)
+		}
 		if doc != nil && doc.Source != storage.SourceEmail {
 			t.Errorf("Source filter not applied: got source %q for doc %q", doc.Source, doc.Title)
 		}
@@ -256,25 +277,21 @@ func TestParsePathsOverrideSupportsPathListSeparators(t *testing.T) {
 }
 
 func TestPurgeClipboardDocuments(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mindcli-clipboard-purge-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := storage.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer closeTestDB(t, db)
 
 	indexPath := filepath.Join(tmpDir, "search.bleve")
 	searchIndex, err := search.NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("Failed to create search index: %v", err)
 	}
-	defer searchIndex.Close()
+	defer closeTestIndex(t, searchIndex)
 
 	ctx := context.Background()
 	now := time.Now()
