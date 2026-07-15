@@ -63,11 +63,7 @@ Content-Type: text/plain
 
 Second message body.
 `
-	tmpDir, err := os.MkdirTemp("", "email-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	mboxPath := filepath.Join(tmpDir, "test.mbox")
 	if err := os.WriteFile(mboxPath, []byte(mboxContent), 0644); err != nil {
@@ -75,7 +71,10 @@ Second message body.
 	}
 
 	src := NewEmailSource([]string{tmpDir}, nil)
-	info, _ := os.Stat(mboxPath)
+	info, err := os.Stat(mboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	file := FileInfo{
 		Path:       mboxPath,
 		ModifiedAt: info.ModTime().Unix(),
@@ -109,11 +108,7 @@ Content-Type: text/plain
 
 Just a quick note about the meeting tomorrow.
 `
-	tmpDir, err := os.MkdirTemp("", "email-single-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	emlPath := filepath.Join(tmpDir, "message.eml")
 	if err := os.WriteFile(emlPath, []byte(emailContent), 0644); err != nil {
@@ -121,7 +116,10 @@ Just a quick note about the meeting tomorrow.
 	}
 
 	src := NewEmailSource([]string{tmpDir}, nil)
-	info, _ := os.Stat(emlPath)
+	info, err := os.Stat(emlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	file := FileInfo{
 		Path:       emlPath,
 		ModifiedAt: info.ModTime().Unix(),
@@ -160,11 +158,7 @@ func TestStripHTML(t *testing.T) {
 }
 
 func TestEmailSourceIgnorePatterns(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "email-ignore-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	includePath := filepath.Join(tmpDir, "inbox.eml")
 	excludedDir := filepath.Join(tmpDir, "private")
