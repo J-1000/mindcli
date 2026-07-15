@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -600,5 +601,26 @@ func TestAnswerClearedOnNavigation(t *testing.T) {
 	md := doneUpdated.(Model)
 	if md.streaming {
 		t.Error("should not be streaming after done chunk")
+	}
+}
+
+func TestStreamingErrorUpdatesStatus(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.streaming = true
+	wantErr := errors.New("backend unavailable")
+
+	updated, _ := model.Update(streamChunkMsg{err: wantErr})
+	got := updated.(Model)
+	if got.streaming {
+		t.Error("streaming should stop after an error")
+	}
+	if !got.statusIsErr {
+		t.Error("streaming error should set error status")
+	}
+	if !strings.Contains(got.statusMsg, wantErr.Error()) {
+		t.Fatalf("status = %q, want it to contain %q", got.statusMsg, wantErr)
 	}
 }
