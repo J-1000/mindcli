@@ -114,7 +114,7 @@ func (b *BrowserSource) Parse(ctx context.Context, file FileInfo) (*storage.Docu
 	if err != nil {
 		return nil, fmt.Errorf("copying browser db: %w", err)
 	}
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	var entries []historyEntry
 	var parseErr error
@@ -229,17 +229,27 @@ func copyToTemp(src string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer srcFile.Close()
 
 	tmpFile, err := os.CreateTemp("", "mindcli-browser-*.db")
 	if err != nil {
+		_ = srcFile.Close()
 		return "", err
 	}
-	defer tmpFile.Close()
 
-	if _, err := io.Copy(tmpFile, srcFile); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", err
+	_, copyErr := io.Copy(tmpFile, srcFile)
+	srcCloseErr := srcFile.Close()
+	tmpCloseErr := tmpFile.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", copyErr
+	}
+	if srcCloseErr != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", srcCloseErr
+	}
+	if tmpCloseErr != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", tmpCloseErr
 	}
 
 	return tmpFile.Name(), nil
@@ -251,7 +261,7 @@ func readChromeHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(`
 		SELECT url, title, visit_count, last_visit_time
@@ -263,7 +273,7 @@ func readChromeHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying chrome history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []historyEntry
 	for rows.Next() {
@@ -300,7 +310,7 @@ func readFirefoxHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(`
 		SELECT url, title, visit_count, last_visit_date
@@ -312,7 +322,7 @@ func readFirefoxHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying firefox history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []historyEntry
 	for rows.Next() {
@@ -352,7 +362,7 @@ func readSafariHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Group by URL and use the latest visit. SQLite's MAX() with bare columns
 	// guarantees hv.title comes from the row holding MAX(hv.visit_time), so the
@@ -369,7 +379,7 @@ func readSafariHistory(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying safari history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []historyEntry
 	for rows.Next() {
@@ -416,7 +426,7 @@ func readFirefoxBookmarks(dbPath string) ([]historyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(`
 		SELECT p.url, COALESCE(b.title, p.title, '') AS title
