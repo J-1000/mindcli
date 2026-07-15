@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -187,5 +189,34 @@ func TestExportEmptyResults(t *testing.T) {
 	}
 	if buf.String() != "" {
 		t.Errorf("expected empty markdown output, got: %s", buf.String())
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestExportPropagatesWriterFailures(t *testing.T) {
+	wantErr := errors.New("write failed")
+	results := testResults()
+
+	for _, tc := range []struct {
+		name   string
+		export func(io.Writer, storage.SearchResults, privacy.Redactor) error
+	}{
+		{name: "json", export: exportJSON},
+		{name: "csv", export: exportCSV},
+		{name: "markdown", export: exportMarkdown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.export(failingWriter{err: wantErr}, results, privacy.Redactor{})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("error = %v, want %v", err, wantErr)
+			}
+		})
 	}
 }
