@@ -243,6 +243,7 @@ type collectionDocsLoadedMsg struct {
 type streamChunkMsg struct {
 	token string
 	done  bool
+	err   error
 }
 
 type reindexDoneMsg struct {
@@ -351,6 +352,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamChunkMsg:
+		if msg.err != nil {
+			m.streaming = false
+			m.statusMsg = fmt.Sprintf("Answer generation failed: %v", msg.err)
+			m.statusIsErr = true
+			m.updatePreviewContent()
+			return m, nil
+		}
 		if msg.done {
 			m.streaming = false
 			m.recordConversationTurn()
@@ -772,7 +780,7 @@ func openFile(path string) {
 	default:
 		return
 	}
-	cmd.Run()
+	_ = cmd.Run()
 }
 
 func (m Model) updatePreview(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -884,12 +892,18 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 
 	go func() {
 		defer close(ch)
-		m.llm.GenerateAnswerStreamWithHistory(ctx, question, contexts, history, func(token string, done bool) {
+		err := m.llm.GenerateAnswerStreamWithHistory(ctx, question, contexts, history, func(token string, done bool) {
 			select {
 			case ch <- streamChunkMsg{token: token, done: done}:
 			case <-ctx.Done():
 			}
 		})
+		if err != nil {
+			select {
+			case ch <- streamChunkMsg{err: err}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 
 	return m.readNextChunk()
