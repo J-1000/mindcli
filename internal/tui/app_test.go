@@ -18,21 +18,18 @@ import (
 func setupTestDB(t *testing.T) (*storage.DB, func()) {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "mindcli-tui-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := storage.Open(dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
 	cleanup := func() {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		if err := db.Close(); err != nil {
+			t.Errorf("closing database: %v", err)
+		}
 	}
 
 	return db, cleanup
