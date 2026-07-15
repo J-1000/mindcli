@@ -2,7 +2,6 @@ package search
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,12 +9,15 @@ import (
 	"github.com/jankowtf/mindcli/internal/storage"
 )
 
-func TestBleveIndex_BasicOperations(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bleve-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
+func closeTestIndex(t *testing.T, idx *BleveIndex) {
+	t.Helper()
+	if err := idx.Close(); err != nil {
+		t.Errorf("closing search index: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+}
+
+func TestBleveIndex_BasicOperations(t *testing.T) {
+	tmpDir := t.TempDir()
 
 	indexPath := filepath.Join(tmpDir, "test.bleve")
 
@@ -24,7 +26,7 @@ func TestBleveIndex_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating index: %v", err)
 	}
-	defer idx.Close()
+	defer closeTestIndex(t, idx)
 
 	ctx := context.Background()
 
@@ -106,18 +108,14 @@ func TestBleveIndex_BasicOperations(t *testing.T) {
 }
 
 func TestBleveIndex_Delete(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bleve-delete-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	indexPath := filepath.Join(tmpDir, "test.bleve")
 	idx, err := NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("creating index: %v", err)
 	}
-	defer idx.Close()
+	defer closeTestIndex(t, idx)
 
 	ctx := context.Background()
 
@@ -160,18 +158,14 @@ func TestBleveIndex_Delete(t *testing.T) {
 }
 
 func TestBleveIndex_SourceFilter(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bleve-source-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	indexPath := filepath.Join(tmpDir, "test.bleve")
 	idx, err := NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("creating index: %v", err)
 	}
-	defer idx.Close()
+	defer closeTestIndex(t, idx)
 
 	ctx := context.Background()
 
@@ -208,11 +202,7 @@ func TestBleveIndex_SourceFilter(t *testing.T) {
 }
 
 func TestBleveIndex_Persistence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bleve-persist-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	indexPath := filepath.Join(tmpDir, "test.bleve")
 	ctx := context.Background()
@@ -235,14 +225,16 @@ func TestBleveIndex_Persistence(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	idx.Close()
+	if err := idx.Close(); err != nil {
+		t.Fatalf("closing index: %v", err)
+	}
 
 	// Reopen and verify
 	idx2, err := NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("reopening index: %v", err)
 	}
-	defer idx2.Close()
+	defer closeTestIndex(t, idx2)
 
 	results, err := idx2.Search(ctx, "persist", 10)
 	if err != nil {
@@ -254,18 +246,14 @@ func TestBleveIndex_Persistence(t *testing.T) {
 }
 
 func TestBleveIndex_Highlights(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bleve-highlight-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	indexPath := filepath.Join(tmpDir, "test.bleve")
 	idx, err := NewBleveIndex(indexPath)
 	if err != nil {
 		t.Fatalf("creating index: %v", err)
 	}
-	defer idx.Close()
+	defer closeTestIndex(t, idx)
 
 	ctx := context.Background()
 
