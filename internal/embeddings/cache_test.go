@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -170,6 +171,47 @@ func TestCachedEmbedderBatch(t *testing.T) {
 	}
 	if mock.batchCalls != 2 {
 		t.Errorf("expected 2 batch calls (only for uncached), got %d", mock.batchCalls)
+	}
+}
+
+func TestCachedEmbedderReportsCacheWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		embed func(*CachedEmbedder) error
+	}{
+		{
+			name: "single",
+			embed: func(cache *CachedEmbedder) error {
+				_, err := cache.Embed(t.Context(), "hello")
+				return err
+			},
+		},
+		{
+			name: "batch",
+			embed: func(cache *CachedEmbedder) error {
+				_, err := cache.EmbedBatch(t.Context(), []string{"hello"})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache, err := NewCachedEmbedder(
+				&mockEmbedder{dim: 8},
+				filepath.Join(t.TempDir(), "cache.db"),
+				"test-model",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cache.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			err = tc.embed(cache)
+			if err == nil || !strings.Contains(err.Error(), "caching embedding") {
+				t.Fatalf("error = %v, want cache write failure", err)
+			}
+		})
 	}
 }
 
