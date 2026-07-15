@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${MINDCLI_REPO:-jankowtf/mindcli}"
+REPO="${MINDCLI_REPO:-J-1000/mindcli}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-}"
 DOWNLOAD_URL="${MINDCLI_DOWNLOAD_URL:-}"
