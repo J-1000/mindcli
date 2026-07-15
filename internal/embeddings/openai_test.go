@@ -14,7 +14,9 @@ func TestOpenAIEmbedderBatch(t *testing.T) {
 			t.Errorf("Authorization = %q, want Bearer sk-test", got)
 		}
 		var req openAIEmbedRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
 		// Return embeddings out of order to exercise index sorting.
 		resp := openAIEmbedResponse{}
 		for i := len(req.Input) - 1; i >= 0; i-- {
@@ -23,7 +25,9 @@ func TestOpenAIEmbedderBatch(t *testing.T) {
 				Embedding []float32 `json:"embedding"`
 			}{Index: i, Embedding: []float32{float32(i), 0.5}})
 		}
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

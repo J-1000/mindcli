@@ -54,7 +54,9 @@ func TestCachedEmbedderModelScoping(t *testing.T) {
 	if _, err := cacheA.Embed(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	cacheA.Close()
+	if err := cacheA.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// A different model sharing the same cache file must not reuse model-a's entry.
 	mockB := &mockEmbedder{dim: 16}
@@ -62,7 +64,11 @@ func TestCachedEmbedderModelScoping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cacheB.Close()
+	defer func() {
+		if err := cacheB.Close(); err != nil {
+			t.Errorf("closing cache: %v", err)
+		}
+	}()
 
 	emb, err := cacheB.Embed(ctx, "hello")
 	if err != nil {
@@ -88,7 +94,11 @@ func TestCachedEmbedder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Errorf("closing cache: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 
@@ -143,7 +153,11 @@ func TestCachedEmbedderBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Errorf("closing cache: %v", err)
+		}
+	}()
 
 	ctx := context.Background()
 

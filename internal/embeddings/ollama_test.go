@@ -35,7 +35,9 @@ func fakeOllamaServer(t *testing.T, handler func(req ollamaEmbedRequest) (int, a
 		status, resp := handler(req)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
 	}))
 }
 
@@ -161,7 +163,9 @@ func TestEmbedBatchOllamaError(t *testing.T) {
 func TestEmbedBatchHTTPStatusError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal server error"))
+		if _, err := w.Write([]byte("internal server error")); err != nil {
+			t.Errorf("failed to write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -235,13 +239,17 @@ func TestEmbedBatchRequestFormat(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedContentType = r.Header.Get("Content-Type")
-		json.NewDecoder(r.Body).Decode(&capturedReq)
+		if err := json.NewDecoder(r.Body).Decode(&capturedReq); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ollamaEmbedResponse{
+		if err := json.NewEncoder(w).Encode(ollamaEmbedResponse{
 			Model:      "my-model",
 			Embeddings: [][]float32{{1.0}, {2.0}},
-		})
+		}); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -315,7 +323,9 @@ func TestEmbedBatchInvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("not valid json{{{"))
+		if _, err := w.Write([]byte("not valid json{{{")); err != nil {
+			t.Errorf("failed to write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
