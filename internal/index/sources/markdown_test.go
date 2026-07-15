@@ -168,11 +168,7 @@ func TestCreatePreview(t *testing.T) {
 }
 
 func TestMarkdownSource_Parse(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "markdown-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	content := `---
 title: Test Document
@@ -190,7 +186,10 @@ It has #tags and [[links]].
 		t.Fatalf("writing file: %v", err)
 	}
 
-	info, _ := os.Stat(filePath)
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fileInfo := FileInfo{
 		Path:       filePath,
 		ModifiedAt: info.ModTime().Unix(),
@@ -229,11 +228,7 @@ It has #tags and [[links]].
 }
 
 func TestMarkdownSource_TitleFallback(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "markdown-title-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// File with no frontmatter and no heading
 	content := "Just some plain content without any title."
@@ -242,7 +237,10 @@ func TestMarkdownSource_TitleFallback(t *testing.T) {
 		t.Fatalf("writing file: %v", err)
 	}
 
-	info, _ := os.Stat(filePath)
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fileInfo := FileInfo{
 		Path:       filePath,
 		ModifiedAt: info.ModTime().Unix(),
