@@ -38,7 +38,7 @@ func Open(path string) (*DB, error) {
 
 	store := &DB{db: db}
 	if err := store.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
@@ -80,12 +80,12 @@ func (d *DB) migrate() error {
 		}
 		for _, stmt := range m.stmts {
 			if _, err := tx.Exec(stmt); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("applying migration %d: %w", m.version, err)
 			}
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (?)`, m.version); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("recording migration %d: %w", m.version, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -328,7 +328,7 @@ func (d *DB) ListDocuments(ctx context.Context, source Source) ([]*Document, err
 	if err != nil {
 		return nil, fmt.Errorf("querying documents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var docs []*Document
 	for rows.Next() {
@@ -380,7 +380,7 @@ func (d *DB) SearchDocuments(ctx context.Context, query string, limit int) ([]*D
 	if err != nil {
 		return nil, fmt.Errorf("searching documents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var docs []*Document
 	for rows.Next() {
@@ -415,7 +415,7 @@ func (d *DB) GetChunksByDocument(ctx context.Context, documentID string) ([]*Chu
 	if err != nil {
 		return nil, fmt.Errorf("querying chunks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var chunks []*Chunk
 	for rows.Next() {
@@ -559,7 +559,7 @@ func (d *DB) GetTags(ctx context.Context, docID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying tags: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tags []string
 	for rows.Next() {
@@ -580,7 +580,7 @@ func (d *DB) ListAllTags(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying all tags: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tags []string
 	for rows.Next() {
@@ -606,7 +606,7 @@ func (d *DB) FindByTag(ctx context.Context, tag string) ([]*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("finding by tag: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var docs []*Document
 	for rows.Next() {
@@ -686,7 +686,7 @@ func (d *DB) ListCollections(ctx context.Context) ([]*Collection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing collections: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var collections []*Collection
 	for rows.Next() {
@@ -793,7 +793,7 @@ func (d *DB) GetCollectionDocuments(ctx context.Context, collectionID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("getting collection documents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var docs []*Document
 	for rows.Next() {
@@ -831,7 +831,7 @@ func (d *DB) GetDocumentCollections(ctx context.Context, documentID string) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("getting document collections: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var collections []*Collection
 	for rows.Next() {
