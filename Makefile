@@ -37,7 +37,7 @@ test-coverage:
 
 ## lint: Run linter
 lint:
-	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
 	golangci-lint run
 
 ## fmt: Format code
