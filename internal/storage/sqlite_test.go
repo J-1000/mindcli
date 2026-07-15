@@ -20,16 +20,34 @@ func setupTestDB(t *testing.T) (*DB, func()) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := Open(dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
 	cleanup := func() {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		if err := db.Close(); err != nil {
+			t.Errorf("closing database: %v", err)
+		}
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Errorf("removing temporary directory: %v", err)
+		}
 	}
 
 	return db, cleanup
+}
+
+func mustSucceed(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func closeTestDB(t *testing.T, db *DB) {
+	t.Helper()
+	if err := db.Close(); err != nil {
+		t.Errorf("closing database: %v", err)
+	}
 }
 
 func TestOpen(t *testing.T) {
@@ -55,14 +73,16 @@ func TestMigrationVersionAndIdempotency(t *testing.T) {
 	if v != 1 {
 		t.Errorf("schemaVersion = %d, want 1", v)
 	}
-	db.Close()
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Re-opening an existing database must not error or change the version.
 	db2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
-	defer db2.Close()
+	defer closeTestDB(t, db2)
 	v2, err := db2.schemaVersion()
 	if err != nil {
 		t.Fatal(err)
@@ -666,9 +686,9 @@ func TestRemoveTag(t *testing.T) {
 		ID: "rm-tag-doc", Source: SourceMarkdown, Path: "/rm.md",
 		ContentHash: "h", IndexedAt: now, ModifiedAt: now,
 	}
-	db.InsertDocument(ctx, doc)
-	db.AddTag(ctx, doc.ID, "manual-tag")
-	db.AddAutoTag(ctx, doc.ID, "auto-tag")
+	mustSucceed(t, db.InsertDocument(ctx, doc))
+	mustSucceed(t, db.AddTag(ctx, doc.ID, "manual-tag"))
+	mustSucceed(t, db.AddAutoTag(ctx, doc.ID, "auto-tag"))
 
 	// Remove manual tag should work
 	if err := db.RemoveTag(ctx, doc.ID, "manual-tag"); err != nil {
@@ -703,13 +723,13 @@ func TestListAllTags(t *testing.T) {
 
 	doc1 := &Document{ID: "t1", Source: SourceMarkdown, Path: "/1.md", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
 	doc2 := &Document{ID: "t2", Source: SourceMarkdown, Path: "/2.md", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
-	db.InsertDocument(ctx, doc1)
-	db.InsertDocument(ctx, doc2)
+	mustSucceed(t, db.InsertDocument(ctx, doc1))
+	mustSucceed(t, db.InsertDocument(ctx, doc2))
 
-	db.AddTag(ctx, doc1.ID, "golang")
-	db.AddTag(ctx, doc1.ID, "concurrency")
-	db.AddTag(ctx, doc2.ID, "golang")
-	db.AddTag(ctx, doc2.ID, "testing")
+	mustSucceed(t, db.AddTag(ctx, doc1.ID, "golang"))
+	mustSucceed(t, db.AddTag(ctx, doc1.ID, "concurrency"))
+	mustSucceed(t, db.AddTag(ctx, doc2.ID, "golang"))
+	mustSucceed(t, db.AddTag(ctx, doc2.ID, "testing"))
 
 	tags, err := db.ListAllTags(ctx)
 	if err != nil {
@@ -733,13 +753,13 @@ func TestFindByTag(t *testing.T) {
 	doc1 := &Document{ID: "f1", Source: SourceMarkdown, Path: "/1.md", Title: "Go Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
 	doc2 := &Document{ID: "f2", Source: SourceMarkdown, Path: "/2.md", Title: "Rust Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
 	doc3 := &Document{ID: "f3", Source: SourceMarkdown, Path: "/3.md", Title: "Python Doc", ContentHash: "h", IndexedAt: now, ModifiedAt: now}
-	db.InsertDocument(ctx, doc1)
-	db.InsertDocument(ctx, doc2)
-	db.InsertDocument(ctx, doc3)
+	mustSucceed(t, db.InsertDocument(ctx, doc1))
+	mustSucceed(t, db.InsertDocument(ctx, doc2))
+	mustSucceed(t, db.InsertDocument(ctx, doc3))
 
-	db.AddTag(ctx, doc1.ID, "programming")
-	db.AddTag(ctx, doc2.ID, "programming")
-	db.AddTag(ctx, doc3.ID, "scripting")
+	mustSucceed(t, db.AddTag(ctx, doc1.ID, "programming"))
+	mustSucceed(t, db.AddTag(ctx, doc2.ID, "programming"))
+	mustSucceed(t, db.AddTag(ctx, doc3.ID, "scripting"))
 
 	docs, err := db.FindByTag(ctx, "programming")
 	if err != nil {
@@ -809,7 +829,7 @@ func TestGetCollection(t *testing.T) {
 
 	ctx := context.Background()
 	c := &Collection{Name: "test-col", Description: "desc", Query: "golang"}
-	db.CreateCollection(ctx, c)
+	mustSucceed(t, db.CreateCollection(ctx, c))
 
 	got, err := db.GetCollection(ctx, c.ID)
 	if err != nil {
@@ -842,7 +862,7 @@ func TestGetCollectionByName(t *testing.T) {
 
 	ctx := context.Background()
 	c := &Collection{Name: "by-name"}
-	db.CreateCollection(ctx, c)
+	mustSucceed(t, db.CreateCollection(ctx, c))
 
 	got, err := db.GetCollectionByName(ctx, "by-name")
 	if err != nil {
@@ -868,9 +888,9 @@ func TestListCollections(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	db.CreateCollection(ctx, &Collection{Name: "beta"})
-	db.CreateCollection(ctx, &Collection{Name: "alpha"})
-	db.CreateCollection(ctx, &Collection{Name: "gamma"})
+	mustSucceed(t, db.CreateCollection(ctx, &Collection{Name: "beta"}))
+	mustSucceed(t, db.CreateCollection(ctx, &Collection{Name: "alpha"}))
+	mustSucceed(t, db.CreateCollection(ctx, &Collection{Name: "gamma"}))
 
 	cols, err := db.ListCollections(ctx)
 	if err != nil {
@@ -905,7 +925,7 @@ func TestRenameCollection(t *testing.T) {
 
 	ctx := context.Background()
 	c := &Collection{Name: "old-name"}
-	db.CreateCollection(ctx, c)
+	mustSucceed(t, db.CreateCollection(ctx, c))
 
 	if err := db.RenameCollection(ctx, c.ID, "new-name"); err != nil {
 		t.Fatalf("RenameCollection() error = %v", err)
@@ -922,9 +942,9 @@ func TestRenameCollectionDuplicate(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	db.CreateCollection(ctx, &Collection{Name: "taken"})
+	mustSucceed(t, db.CreateCollection(ctx, &Collection{Name: "taken"}))
 	c := &Collection{Name: "rename-me"}
-	db.CreateCollection(ctx, c)
+	mustSucceed(t, db.CreateCollection(ctx, c))
 
 	err := db.RenameCollection(ctx, c.ID, "taken")
 	if err != ErrCollectionExists {
@@ -938,7 +958,7 @@ func TestDeleteCollection(t *testing.T) {
 
 	ctx := context.Background()
 	c := &Collection{Name: "delete-me"}
-	db.CreateCollection(ctx, c)
+	mustSucceed(t, db.CreateCollection(ctx, c))
 
 	if err := db.DeleteCollection(ctx, c.ID); err != nil {
 		t.Fatalf("DeleteCollection() error = %v", err)
@@ -965,7 +985,7 @@ func TestDeleteCollectionByName(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	db.CreateCollection(ctx, &Collection{Name: "del-by-name"})
+	mustSucceed(t, db.CreateCollection(ctx, &Collection{Name: "del-by-name"}))
 
 	if err := db.DeleteCollectionByName(ctx, "del-by-name"); err != nil {
 		t.Fatalf("DeleteCollectionByName() error = %v", err)
@@ -998,7 +1018,7 @@ func TestAddToCollection(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
 
 	if err := db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
@@ -1017,10 +1037,10 @@ func TestAddToCollectionIdempotent(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
 
-	db.AddToCollection(ctx, col.ID, doc.ID)
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, doc.ID))
 	// Second add should not error
 	if err := db.AddToCollection(ctx, col.ID, doc.ID); err != nil {
 		t.Fatalf("AddToCollection() idempotent error = %v", err)
@@ -1038,9 +1058,9 @@ func TestRemoveFromCollection(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
-	db.AddToCollection(ctx, col.ID, doc.ID)
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, doc.ID))
 
 	if err := db.RemoveFromCollection(ctx, col.ID, doc.ID); err != nil {
 		t.Fatalf("RemoveFromCollection() error = %v", err)
@@ -1058,7 +1078,7 @@ func TestRemoveFromCollectionNotFound(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 
 	err := db.RemoveFromCollection(ctx, col.ID, "nonexistent")
 	if err != ErrNotFound {
@@ -1072,11 +1092,11 @@ func TestGetCollectionDocuments(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	d1 := createTestDoc(t, db, "d1", "/d1.md")
 	d2 := createTestDoc(t, db, "d2", "/d2.md")
-	db.AddToCollection(ctx, col.ID, d1.ID)
-	db.AddToCollection(ctx, col.ID, d2.ID)
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, d1.ID))
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, d2.ID))
 
 	docs, err := db.GetCollectionDocuments(ctx, col.ID)
 	if err != nil {
@@ -1093,7 +1113,7 @@ func TestGetCollectionDocumentsEmpty(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "empty-col"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 
 	docs, err := db.GetCollectionDocuments(ctx, col.ID)
 	if err != nil {
@@ -1110,7 +1130,7 @@ func TestCountCollectionDocuments(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 
 	count, _ := db.CountCollectionDocuments(ctx, col.ID)
 	if count != 0 {
@@ -1119,7 +1139,7 @@ func TestCountCollectionDocuments(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		doc := createTestDoc(t, db, fmt.Sprintf("d%d", i), fmt.Sprintf("/d%d.md", i))
-		db.AddToCollection(ctx, col.ID, doc.ID)
+		mustSucceed(t, db.AddToCollection(ctx, col.ID, doc.ID))
 	}
 
 	count, _ = db.CountCollectionDocuments(ctx, col.ID)
@@ -1135,12 +1155,12 @@ func TestGetDocumentCollections(t *testing.T) {
 	ctx := context.Background()
 	c1 := &Collection{Name: "alpha"}
 	c2 := &Collection{Name: "beta"}
-	db.CreateCollection(ctx, c1)
-	db.CreateCollection(ctx, c2)
+	mustSucceed(t, db.CreateCollection(ctx, c1))
+	mustSucceed(t, db.CreateCollection(ctx, c2))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
 
-	db.AddToCollection(ctx, c1.ID, doc.ID)
-	db.AddToCollection(ctx, c2.ID, doc.ID)
+	mustSucceed(t, db.AddToCollection(ctx, c1.ID, doc.ID))
+	mustSucceed(t, db.AddToCollection(ctx, c2.ID, doc.ID))
 
 	cols, err := db.GetDocumentCollections(ctx, doc.ID)
 	if err != nil {
@@ -1160,11 +1180,11 @@ func TestDeleteCollectionCascade(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "cascade"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
-	db.AddToCollection(ctx, col.ID, doc.ID)
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, doc.ID))
 
-	db.DeleteCollection(ctx, col.ID)
+	mustSucceed(t, db.DeleteCollection(ctx, col.ID))
 
 	// Memberships should be gone
 	cols, _ := db.GetDocumentCollections(ctx, doc.ID)
@@ -1179,11 +1199,11 @@ func TestDocumentDeleteCascade(t *testing.T) {
 
 	ctx := context.Background()
 	col := &Collection{Name: "col1"}
-	db.CreateCollection(ctx, col)
+	mustSucceed(t, db.CreateCollection(ctx, col))
 	doc := createTestDoc(t, db, "d1", "/d1.md")
-	db.AddToCollection(ctx, col.ID, doc.ID)
+	mustSucceed(t, db.AddToCollection(ctx, col.ID, doc.ID))
 
-	db.DeleteDocument(ctx, doc.ID)
+	mustSucceed(t, db.DeleteDocument(ctx, doc.ID))
 
 	count, _ := db.CountCollectionDocuments(ctx, col.ID)
 	if count != 0 {
