@@ -1,6 +1,6 @@
 module github.com/jankowtf/mindcli
 
-go 1.25.6
+go 1.25.12
 
 require (
 	github.com/atotto/clipboard v0.1.4
