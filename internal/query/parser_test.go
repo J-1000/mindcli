@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -256,16 +257,18 @@ func TestGenerateStreamCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	count := 0
-	_ = client.GenerateStream(ctx, "test", func(token string, done bool) {
+	err := client.GenerateStream(ctx, "test", func(token string, done bool) {
 		count++
 		if count >= 5 {
 			cancel()
 		}
 	})
 
-	// We should have stopped relatively early (the stream decode will error after cancel)
-	if count > 100 {
-		t.Errorf("expected early cancellation, got %d chunks", count)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("GenerateStream() error = %v, want context.Canceled", err)
+	}
+	if count != 5 {
+		t.Errorf("callbacks after cancellation = %d, want 5", count)
 	}
 }
 
