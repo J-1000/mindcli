@@ -55,6 +55,8 @@ type Model struct {
 	tagInput     textinput.Model
 	collecting   bool // true when collection input mode is active
 	collectInput textinput.Model
+	capturing    bool
+	captureInput textinput.Model
 	redactor     privacy.Redactor
 
 	highlights     map[string][]string // matching snippets per document ID
@@ -74,6 +76,7 @@ type Model struct {
 	// reindex runs a full index pass; nil disables in-app indexing.
 	reindex  func(context.Context) (indexed int, errs int, err error)
 	indexing bool // true while an in-app index pass is running
+	capture  func(context.Context, string) (string, error)
 
 	currentQuestion string                   // question currently being answered
 	conversation    []query.ConversationTurn // recent Q&A turns for follow-ups
@@ -108,6 +111,9 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 	collectTi := textinput.New()
 	collectTi.Placeholder = "Enter collection name..."
 	collectTi.CharLimit = 64
+	captureTi := textinput.New()
+	captureTi.Placeholder = "Capture a thought..."
+	captureTi.CharLimit = 4096
 
 	return Model{
 		db:           db,
@@ -118,11 +124,17 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 		preview:      vp,
 		tagInput:     tagTi,
 		collectInput: collectTi,
+		captureInput: captureTi,
 		panel:        PanelSearch,
 		keys:         DefaultKeyMap(),
 		redactor:     redactor,
 		reindex:      reindex,
 	}
+}
+
+// SetCapture enables the in-app quick-capture action.
+func (m *Model) SetCapture(capture func(context.Context, string) (string, error)) {
+	m.capture = capture
 }
 
 // Init initializes the model.
@@ -272,6 +284,11 @@ type relatedResultsMsg struct {
 	results     []query.RelatedResult
 }
 
+type captureDoneMsg struct {
+	path string
+	err  error
+}
+
 type streamChunkMsg struct {
 	token string
 	done  bool
@@ -291,6 +308,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Handle modal input modes first
+		if m.capturing {
+			return m.updateCaptureInput(msg)
+		}
 		if m.tagging {
 			return m.updateTagInput(msg)
 		}
@@ -312,6 +332,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Help):
 			m.showHelp = !m.showHelp
+			return m, nil
+
+		case key.Matches(msg, m.keys.Capture):
+			if m.capture != nil {
+				m.showHelp = false
+				m.capturing = true
+				m.captureInput.SetValue("")
+				m.captureInput.Focus()
+				m.searchInput.Blur()
+				m.statusMsg = "Capture a thought:"
+				m.statusIsErr = false
+			}
 			return m, nil
 
 		case key.Matches(msg, m.keys.Tab):
@@ -443,6 +475,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("%d documents related to %s", len(m.results), msg.sourceTitle)
 		m.statusIsErr = false
 		m.updatePreviewContent()
+		return m, nil
+
+	case captureDoneMsg:
+		m.updateFocus()
+		if msg.err != nil {
+			m.statusMsg = "Capture failed: " + msg.err.Error()
+			m.statusIsErr = true
+			return m, nil
+		}
+		if doc, err := m.db.GetDocumentByPath(context.Background(), msg.path); err == nil {
+			updated := []*storage.Document{doc}
+			for _, existing := range m.results {
+				if existing.ID != doc.ID {
+					updated = append(updated, existing)
+				}
+			}
+			m.results = updated
+			m.cursor = 0
+			m.relatedReasons = nil
+			m.highlights = nil
+			m.updatePreviewContent()
+		}
+		m.statusMsg = "Captured: " + msg.path
+		m.statusIsErr = false
 		return m, nil
 
 	case searchDebounceMsg:
@@ -703,6 +759,38 @@ func (m Model) startRelatedSearch() (Model, tea.Cmd) {
 		}
 		return relatedResultsMsg{sourceTitle: doc.Title, results: results}
 	}
+}
+
+func (m Model) updateCaptureInput(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		content := strings.TrimSpace(m.captureInput.Value())
+		if content == "" {
+			m.statusMsg = "Capture cannot be empty"
+			m.statusIsErr = true
+			return m, nil
+		}
+		capture := m.capture
+		m.capturing = false
+		m.captureInput.Blur()
+		m.statusMsg = "Capturing..."
+		m.statusIsErr = false
+		return m, func() tea.Msg {
+			path, err := capture(context.Background(), content)
+			return captureDoneMsg{path: path, err: err}
+		}
+	case tea.KeyEscape:
+		m.capturing = false
+		m.captureInput.SetValue("")
+		m.captureInput.Blur()
+		m.statusMsg = ""
+		m.statusIsErr = false
+		m.updateFocus()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.captureInput, cmd = m.captureInput.Update(msg)
+	return m, cmd
 }
 
 func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -1281,6 +1369,12 @@ func (m Model) renderCollectionsList(width, height int) string {
 }
 
 func (m Model) renderStatusBar() string {
+	if m.capturing {
+		return styles.StatusBarStyle.Render(
+			styles.HelpKeyStyle.Render("Capture: ") + m.captureInput.View() +
+				styles.HelpDescStyle.Render("  (enter to save, esc to cancel)"),
+		)
+	}
 	if m.tagging {
 		return styles.StatusBarStyle.Render(
 			styles.HelpKeyStyle.Render("Tag: ") + m.tagInput.View() +
@@ -1336,6 +1430,7 @@ func (m Model) renderHelp() string {
 		{"y", "Copy path to clipboard"},
 		{"r", "Refresh list"},
 		{"R", "Find related documents"},
+		{"Ctrl+n", "Quick capture to inbox"},
 		{"i", "Index sources now"},
 		{"f", "Cycle source filter"},
 		{"t", "Add tag"},

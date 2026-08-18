@@ -15,6 +15,7 @@ type KeyMap struct {
 	Copy              key.Binding
 	Refresh           key.Binding
 	Related           key.Binding
+	Capture           key.Binding
 	Index             key.Binding
 	Filter            key.Binding
 	Help              key.Binding
@@ -73,6 +74,10 @@ func DefaultKeyMap() KeyMap {
 		Related: key.NewBinding(
 			key.WithKeys("R"),
 			key.WithHelp("R", "related"),
+		),
+		Capture: key.NewBinding(
+			key.WithKeys("ctrl+n"),
+			key.WithHelp("ctrl+n", "capture"),
 		),
 		Index: key.NewBinding(
 			key.WithKeys("i"),
@@ -144,6 +149,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Search, k.Enter, k.Escape},
 		{k.Up, k.Down, k.Tab},
 		{k.Open, k.Copy, k.Refresh, k.Related},
+		{k.Capture},
 		{k.Help, k.Quit},
 	}
 }

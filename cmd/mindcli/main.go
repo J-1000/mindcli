@@ -448,6 +448,10 @@ func runTUI() error {
 	}
 
 	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor, reindex)
+	model.SetCapture(func(ctx context.Context, content string) (string, error) {
+		result, err := captureAndIndex(ctx, s, capture.Request{Content: content, Tags: []string{"inbox"}})
+		return result.Path, err
+	})
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
