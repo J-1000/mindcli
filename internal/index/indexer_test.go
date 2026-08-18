@@ -275,6 +275,13 @@ func TestIndexer_IncrementalIndexing(t *testing.T) {
 	if stats1.IndexedFiles != 1 {
 		t.Errorf("first run: IndexedFiles = %d, want 1", stats1.IndexedFiles)
 	}
+	doc, err := db.GetDocumentByPath(ctx, filePath)
+	if err != nil {
+		t.Fatalf("loading first indexed document: %v", err)
+	}
+	if err := db.AddTag(ctx, doc.ID, "favorite"); err != nil {
+		t.Fatalf("adding stored tag: %v", err)
+	}
 
 	// Index again without changes - should skip
 	stats2, err := indexer.IndexAll(ctx)
@@ -284,6 +291,20 @@ func TestIndexer_IncrementalIndexing(t *testing.T) {
 	// The file should be counted but skipped due to unchanged modtime
 	if stats2.TotalFiles != 1 {
 		t.Errorf("second run: TotalFiles = %d, want 1", stats2.TotalFiles)
+	}
+	doc, err = db.GetDocumentByPath(ctx, filePath)
+	if err != nil {
+		t.Fatalf("loading unchanged document: %v", err)
+	}
+	if got := doc.TagsString(); got != "favorite" {
+		t.Errorf("tags after incremental index = %q, want favorite", got)
+	}
+	tagResults, err := searchIdx.Search(ctx, "tag:favorite", 10)
+	if err != nil {
+		t.Fatalf("searching stored tag: %v", err)
+	}
+	if len(tagResults) != 1 || tagResults[0].ID != doc.ID {
+		t.Fatalf("stored tag search = %+v, want document %s", tagResults, doc.ID)
 	}
 
 	// Modify file

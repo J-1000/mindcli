@@ -23,7 +23,7 @@ func testResults() storage.SearchResults {
 				Path:       "/notes/go.md",
 				Title:      "Go Programming",
 				Preview:    "Go is great for concurrency.",
-				Metadata:   map[string]string{"tags": "go,concurrency"},
+				Metadata:   map[string]string{"tags": "go,concurrency", "stored_tags": "favorite"},
 				ModifiedAt: now,
 			},
 			Score: 0.95,
@@ -67,8 +67,8 @@ func TestExportJSON(t *testing.T) {
 	if docs[0].Score != 0.95 {
 		t.Errorf("docs[0].Score = %f, want 0.95", docs[0].Score)
 	}
-	if docs[0].Tags != "go,concurrency" {
-		t.Errorf("docs[0].Tags = %q, want %q", docs[0].Tags, "go,concurrency")
+	if docs[0].Tags != "go,concurrency,favorite" {
+		t.Errorf("docs[0].Tags = %q, want %q", docs[0].Tags, "go,concurrency,favorite")
 	}
 	if docs[1].Tags != "" {
 		t.Errorf("docs[1].Tags = %q, want empty", docs[1].Tags)
@@ -119,7 +119,7 @@ func TestExportMarkdown(t *testing.T) {
 	if !strings.Contains(output, "## 2. Rust Overview") {
 		t.Error("missing second heading")
 	}
-	if !strings.Contains(output, "**Tags:** go,concurrency") {
+	if !strings.Contains(output, "**Tags:** go,concurrency,favorite") {
 		t.Error("missing tags for first doc")
 	}
 	if !strings.Contains(output, "**Source:** markdown") {

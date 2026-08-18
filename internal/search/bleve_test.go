@@ -38,7 +38,7 @@ func TestBleveIndex_BasicOperations(t *testing.T) {
 			Path:     "/notes/golang.md",
 			Title:    "Go Programming Guide",
 			Content:  "Go is a statically typed programming language designed at Google.",
-			Metadata: map[string]string{"tags": "go,programming,tutorial"},
+			Metadata: map[string]string{"tags": "go,programming,tutorial", "stored_tags": "favorite"},
 		},
 		{
 			ID:       "2",
@@ -104,6 +104,14 @@ func TestBleveIndex_BasicOperations(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("got %d results, want 0", len(results))
+	}
+
+	results, err = idx.Search(ctx, "tag:favorite", 10)
+	if err != nil {
+		t.Fatalf("searching stored tag: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "1" {
+		t.Errorf("stored tag search = %+v, want document 1", results)
 	}
 }
 

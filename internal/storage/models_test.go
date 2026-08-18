@@ -103,6 +103,27 @@ func TestDocumentSetMetadataFromJSON(t *testing.T) {
 	}
 }
 
+func TestDocumentTagsCombinesSourceAndStoredTags(t *testing.T) {
+	doc := &Document{Metadata: map[string]string{
+		"tags":        "go, Demo",
+		"stored_tags": "demo, favorite",
+	}}
+
+	if got := doc.TagsString(); got != "go,Demo,favorite" {
+		t.Fatalf("TagsString() = %q, want %q", got, "go,Demo,favorite")
+	}
+
+	doc.SetStoredTags([]string{"reference", "todo"})
+	if got := doc.TagsString(); got != "go,Demo,reference,todo" {
+		t.Fatalf("TagsString() after SetStoredTags = %q", got)
+	}
+
+	doc.SetStoredTags(nil)
+	if got := doc.TagsString(); got != "go,Demo" {
+		t.Fatalf("TagsString() after clearing stored tags = %q", got)
+	}
+}
+
 func TestSearchResultsSorting(t *testing.T) {
 	results := SearchResults{
 		{Score: 0.5},

@@ -665,6 +665,13 @@ func TestAddAndGetTags(t *testing.T) {
 		t.Errorf("GetTags() = %v, want [concurrency golang tutorial]", tags)
 	}
 
+	if err := db.AttachStoredTags(ctx, doc); err != nil {
+		t.Fatalf("AttachStoredTags() error = %v", err)
+	}
+	if got := doc.Metadata["stored_tags"]; got != "concurrency,golang,tutorial" {
+		t.Errorf("stored tag projection = %q, want %q", got, "concurrency,golang,tutorial")
+	}
+
 	// Duplicate add should be ignored
 	if err := db.AddTag(ctx, doc.ID, "golang"); err != nil {
 		t.Fatalf("AddTag() duplicate error = %v", err)

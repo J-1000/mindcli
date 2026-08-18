@@ -180,6 +180,76 @@ func TestSearchWithTempIndex(t *testing.T) {
 	}
 }
 
+func TestSyncDocumentTagsPersistsAndReindexes(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestDB(t, db)
+	searchIndex, err := search.NewBleveIndex(filepath.Join(tmpDir, "search.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestIndex(t, searchIndex)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	doc := &storage.Document{
+		ID: "tagged", Source: storage.SourceMarkdown, Path: "/tagged.md",
+		Title: "Tagged", Content: "document", ContentHash: "hash",
+		IndexedAt: now, ModifiedAt: now,
+	}
+	if err := db.InsertDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := searchIndex.Index(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddTag(ctx, doc.ID, "favorite"); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncDocumentTags(ctx, db, searchIndex, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := db.GetDocument(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.TagsString(); got != "favorite" {
+		t.Fatalf("persisted tags = %q, want favorite", got)
+	}
+	results, err := searchIndex.Search(ctx, "tag:favorite", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != doc.ID {
+		t.Fatalf("tag search = %+v, want document %s", results, doc.ID)
+	}
+
+	if err := db.RemoveTag(ctx, doc.ID, "favorite"); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncDocumentTags(ctx, db, searchIndex, reloaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = db.GetDocument(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.TagsString(); got != "" {
+		t.Fatalf("tags after remove = %q, want empty", got)
+	}
+	results, err = searchIndex.Search(ctx, "tag:favorite", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("tag search after remove returned %+v", results)
+	}
+}
+
 // TestSearchWithSourceFilter verifies the query parser integrates with search for source filtering.
 func TestSearchWithSourceFilter(t *testing.T) {
 	tmpDir := t.TempDir()
