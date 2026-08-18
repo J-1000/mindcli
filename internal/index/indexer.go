@@ -193,6 +193,7 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 	var processed int64
 	var indexed int64
 	var errors int64
+	_, isMultiDocumentSource := src.(sources.MultiDocumentSource)
 
 	// Start workers
 	for i := 0; i < idx.workers; i++ {
@@ -211,9 +212,14 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					idx.progress.OnProgress(string(src.Name()), int(current), len(allFiles), file.Path)
 				}
 
-				// Fast path: skip files whose mtime hasn't advanced.
-				existing, _ := idx.db.GetDocumentByPath(ctx, file.Path)
-				if !idx.force && existing != nil && existing.ModifiedAt.Unix() >= file.ModifiedAt {
+				// Fast path for ordinary file-backed sources: skip files whose
+				// mtime hasn't advanced. Multi-document artifacts must be parsed
+				// first so each returned document can be checked independently.
+				var existing *storage.Document
+				if !isMultiDocumentSource {
+					existing, _ = idx.db.GetDocumentByPath(ctx, file.Path)
+				}
+				if !isMultiDocumentSource && !idx.force && existing != nil && existing.ModifiedAt.Unix() >= file.ModifiedAt {
 					if err := idx.refreshStoredTags(ctx, existing); err != nil {
 						if idx.progress != nil {
 							idx.progress.OnError(string(src.Name()), file.Path, err)
@@ -225,8 +231,8 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
-				// Parse document
-				doc, err := src.Parse(ctx, file)
+				// Parse one or more documents from the scanned artifact.
+				docs, err := sources.ParseDocuments(ctx, src, file)
 				if err != nil {
 					if idx.progress != nil {
 						idx.progress.OnError(string(src.Name()), file.Path, err)
@@ -235,50 +241,72 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
-				idx.applyRedaction(doc)
-				if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
-					if idx.progress != nil {
-						idx.progress.OnError(string(src.Name()), file.Path, err)
-					}
-					atomic.AddInt64(&errors, 1)
-					continue
-				}
-
-				// Content-hash check: if the bytes are identical despite a
-				// newer mtime, refresh metadata but skip the expensive
-				// re-embedding (existing vectors are still valid).
-				unchanged := !idx.force && existing != nil && existing.ContentHash == doc.ContentHash
-
-				// Store in database
-				if err := idx.db.UpsertDocument(ctx, doc); err != nil {
-					if idx.progress != nil {
-						idx.progress.OnError(string(src.Name()), file.Path, err)
-					}
-					atomic.AddInt64(&errors, 1)
-					continue
-				}
-
-				// Index in search
-				if err := idx.search.Index(ctx, doc); err != nil {
-					if idx.progress != nil {
-						idx.progress.OnError(string(src.Name()), file.Path, err)
-					}
-					atomic.AddInt64(&errors, 1)
-					continue
-				}
-
-				// Generate embeddings if available (skipped when content is
-				// unchanged, since existing vectors remain valid).
-				if idx.vectors != nil && idx.embedder != nil && !unchanged {
-					if err := idx.embedDocument(ctx, doc); err != nil {
+				for _, doc := range docs {
+					if doc == nil || doc.ID == "" {
+						err := fmt.Errorf("source returned a document without a stable ID")
 						if idx.progress != nil {
 							idx.progress.OnError(string(src.Name()), file.Path, err)
 						}
 						atomic.AddInt64(&errors, 1)
+						continue
 					}
-				}
 
-				atomic.AddInt64(&indexed, 1)
+					docExisting := existing
+					if isMultiDocumentSource {
+						docExisting, _ = idx.db.GetDocument(ctx, doc.ID)
+						if !idx.force && docExisting != nil && !doc.ModifiedAt.After(docExisting.ModifiedAt) {
+							if err := idx.refreshStoredTags(ctx, docExisting); err != nil {
+								if idx.progress != nil {
+									idx.progress.OnError(string(src.Name()), doc.Path, err)
+								}
+								atomic.AddInt64(&errors, 1)
+								continue
+							}
+							atomic.AddInt64(&indexed, 1)
+							continue
+						}
+					}
+
+					idx.applyRedaction(doc)
+					if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), doc.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+						continue
+					}
+
+					// Content-hash check: if the bytes are identical despite newer
+					// metadata, keep the existing vectors.
+					unchanged := !idx.force && docExisting != nil && docExisting.ContentHash == doc.ContentHash
+
+					if err := idx.db.UpsertDocument(ctx, doc); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), doc.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+						continue
+					}
+
+					if err := idx.search.Index(ctx, doc); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), doc.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+						continue
+					}
+
+					if idx.vectors != nil && idx.embedder != nil && !unchanged {
+						if err := idx.embedDocument(ctx, doc); err != nil {
+							if idx.progress != nil {
+								idx.progress.OnError(string(src.Name()), doc.Path, err)
+							}
+							atomic.AddInt64(&errors, 1)
+						}
+					}
+
+					atomic.AddInt64(&indexed, 1)
+				}
 			}
 		}()
 	}
@@ -323,26 +351,31 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 			}
 		}
 
-		doc, err := src.Parse(ctx, fileInfo)
+		docs, err := sources.ParseDocuments(ctx, src, fileInfo)
 		if err != nil {
 			return fmt.Errorf("parsing: %w", err)
 		}
-		idx.applyRedaction(doc)
-		if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
-			return fmt.Errorf("attaching stored tags: %w", err)
-		}
+		for _, doc := range docs {
+			if doc == nil || doc.ID == "" {
+				return fmt.Errorf("parsing: source returned a document without a stable ID")
+			}
+			idx.applyRedaction(doc)
+			if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
+				return fmt.Errorf("attaching stored tags: %w", err)
+			}
 
-		if err := idx.db.UpsertDocument(ctx, doc); err != nil {
-			return fmt.Errorf("storing: %w", err)
-		}
+			if err := idx.db.UpsertDocument(ctx, doc); err != nil {
+				return fmt.Errorf("storing: %w", err)
+			}
 
-		if err := idx.search.Index(ctx, doc); err != nil {
-			return fmt.Errorf("indexing: %w", err)
-		}
+			if err := idx.search.Index(ctx, doc); err != nil {
+				return fmt.Errorf("indexing: %w", err)
+			}
 
-		if idx.vectors != nil && idx.embedder != nil {
-			if err := idx.embedDocument(ctx, doc); err != nil {
-				return fmt.Errorf("embedding: %w", err)
+			if idx.vectors != nil && idx.embedder != nil {
+				if err := idx.embedDocument(ctx, doc); err != nil {
+					return fmt.Errorf("embedding: %w", err)
+				}
 			}
 		}
 
