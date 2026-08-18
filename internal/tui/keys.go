@@ -30,6 +30,9 @@ type KeyMap struct {
 	Tag               key.Binding
 	Collection        key.Binding
 	BrowseCollections key.Binding
+	SessionAdd        key.Binding
+	SessionPin        key.Binding
+	SessionExclude    key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings.
@@ -135,6 +138,18 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("C"),
 			key.WithHelp("C", "browse collections"),
 		),
+		SessionAdd: key.NewBinding(
+			key.WithKeys("A"),
+			key.WithHelp("A", "add to session"),
+		),
+		SessionPin: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "pin in session"),
+		),
+		SessionExclude: key.NewBinding(
+			key.WithKeys("X"),
+			key.WithHelp("X", "exclude from session"),
+		),
 	}
 }
 
@@ -149,7 +164,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Search, k.Enter, k.Escape},
 		{k.Up, k.Down, k.Tab},
 		{k.Open, k.Copy, k.Refresh, k.Related},
-		{k.Capture},
+		{k.Capture, k.SessionAdd, k.SessionPin, k.SessionExclude},
 		{k.Help, k.Quit},
 	}
 }

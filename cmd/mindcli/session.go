@@ -21,7 +21,13 @@ const maxSessionNameRunes = 80
 
 func runSession(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: mindcli session <create|list|show|delete|add|pin|exclude|remove|export> [args...]")
+		return fmt.Errorf("usage: mindcli session <create|resume|list|show|delete|add|pin|exclude|remove|export> [args...]")
+	}
+	if args[0] == "resume" {
+		if len(args) != 2 {
+			return fmt.Errorf("usage: mindcli session resume <name>")
+		}
+		return runTUIWithSession(args[1])
 	}
 
 	s, err := openStores(openOpts{})
@@ -128,7 +134,7 @@ func runSession(args []string) error {
 		return runSessionExport(ctx, s, args[1:])
 
 	default:
-		return fmt.Errorf("unknown session subcommand %q: use create, list, show, delete, add, pin, exclude, remove, or export", args[0])
+		return fmt.Errorf("unknown session subcommand %q: use create, resume, list, show, delete, add, pin, exclude, remove, or export", args[0])
 	}
 }
 

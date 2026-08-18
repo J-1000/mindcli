@@ -80,6 +80,12 @@ type Model struct {
 
 	currentQuestion string                   // question currently being answered
 	conversation    []query.ConversationTurn // recent Q&A turns for follow-ups
+	session         *storage.ResearchSession
+	sessionTurns    []*storage.SessionTurn
+	sessionDocs     []*storage.SessionDocument
+	sessionStates   map[string]storage.SessionDocumentState
+	currentSources  []*storage.Document
+	contextTotal    int
 
 	// Dimensions
 	width  int
@@ -88,6 +94,14 @@ type Model struct {
 	// Keybindings
 	keys KeyMap
 }
+
+const (
+	maxConversationTurns    = 4
+	maxAnswerDocuments      = 5
+	maxAnswerDocumentRunes  = 1000
+	maxHistoryQuestionRunes = 1000
+	maxHistoryAnswerRunes   = 4000
+)
 
 // New creates a new Model with the given database and search index.
 // The hybrid searcher and LLM client are optional; if nil, those features are
@@ -135,6 +149,28 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 // SetCapture enables the in-app quick-capture action.
 func (m *Model) SetCapture(capture func(context.Context, string) (string, error)) {
 	m.capture = capture
+}
+
+// SetSession resumes an explicitly persisted research session. Only resumed
+// sessions write turns or retain document-context rules across TUI processes.
+func (m *Model) SetSession(session *storage.ResearchSession, turns []*storage.SessionTurn, documents []*storage.SessionDocument) {
+	m.session = session
+	m.sessionTurns = append([]*storage.SessionTurn(nil), turns...)
+	m.sessionDocs = append([]*storage.SessionDocument(nil), documents...)
+	m.sessionStates = make(map[string]storage.SessionDocumentState, len(documents))
+	for _, document := range documents {
+		if document != nil && document.Document != nil {
+			m.sessionStates[document.Document.ID] = document.State
+		}
+	}
+	start := max(0, len(turns)-maxConversationTurns)
+	m.conversation = make([]query.ConversationTurn, 0, len(turns)-start)
+	for _, turn := range turns[start:] {
+		m.conversation = append(m.conversation, query.ConversationTurn{
+			Question: truncateRunes(turn.Question, maxHistoryQuestionRunes),
+			Answer:   truncateRunes(turn.Answer, maxHistoryAnswerRunes),
+		})
+	}
 }
 
 // Init initializes the model.
@@ -327,7 +363,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Clear search if in search mode with text
 			m.searchInput.SetValue("")
-			m.conversation = nil
+			m.resetEphemeralConversation()
 			return m, m.loadDocuments()
 
 		case key.Matches(msg, m.keys.Help):
@@ -357,7 +393,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Escape):
 			if m.panel == PanelSearch && m.searchInput.Value() != "" {
 				m.searchInput.SetValue("")
-				m.conversation = nil
+				m.resetEphemeralConversation()
 				return m, m.loadDocuments()
 			}
 			m.panel = PanelSearch
@@ -412,11 +448,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = false
 		// Start streaming if intent is answer/summarize (not for live,
 		// keystroke-driven searches — only when the user commits with Enter).
-		if !msg.live && m.llm != nil && len(m.results) > 0 &&
+		if !msg.live && m.llm != nil && len(m.answerCandidates(m.results)) > 0 &&
 			(msg.parsed.Intent == query.IntentAnswer || msg.parsed.Intent == query.IntentSummarize) {
 			m.currentQuestion = msg.parsed.Original
-			m.showAnswer() // Shows "Thinking..."
-			return m, m.startStreaming(msg.parsed.Original, m.results)
+			cmd := m.startStreaming(msg.parsed.Original, m.results)
+			m.showAnswer() // Shows "Thinking..." and deterministic context bounds.
+			return m, cmd
 		}
 		m.updatePreviewContent()
 		return m, nil
@@ -431,7 +468,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.done {
 			m.streaming = false
-			m.recordConversationTurn()
+			if err := m.recordConversationTurn(); err != nil {
+				m.statusMsg = "Session persistence failed: " + err.Error()
+				m.statusIsErr = true
+			}
 			m.showAnswer()
 		} else {
 			m.answerText += msg.token
@@ -648,6 +688,15 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case key.Matches(msg, m.keys.SessionAdd):
+		return m.setSelectedSessionDocument(storage.SessionDocumentIncluded)
+
+	case key.Matches(msg, m.keys.SessionPin):
+		return m.setSelectedSessionDocument(storage.SessionDocumentPinned)
+
+	case key.Matches(msg, m.keys.SessionExclude):
+		return m.setSelectedSessionDocument(storage.SessionDocumentExcluded)
 
 	case key.Matches(msg, m.keys.Tag):
 		if m.cursor < len(m.results) {
@@ -963,11 +1012,55 @@ func (m Model) updatePreview(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.Related):
 		return m.startRelatedSearch()
+	case key.Matches(msg, m.keys.SessionAdd):
+		return m.setSelectedSessionDocument(storage.SessionDocumentIncluded)
+	case key.Matches(msg, m.keys.SessionPin):
+		return m.setSelectedSessionDocument(storage.SessionDocumentPinned)
+	case key.Matches(msg, m.keys.SessionExclude):
+		return m.setSelectedSessionDocument(storage.SessionDocumentExcluded)
 	}
 
 	var cmd tea.Cmd
 	m.preview, cmd = m.preview.Update(msg)
 	return m, cmd
+}
+
+func (m Model) setSelectedSessionDocument(state storage.SessionDocumentState) (Model, tea.Cmd) {
+	if m.session == nil {
+		m.statusMsg = "Resume a research session before changing session context"
+		m.statusIsErr = true
+		return m, nil
+	}
+	if m.cursor >= len(m.results) {
+		return m, nil
+	}
+	doc := m.results[m.cursor]
+	if err := m.db.SetSessionDocumentState(context.Background(), m.session.ID, doc.ID, state); err != nil {
+		m.statusMsg = "Session context failed: " + err.Error()
+		m.statusIsErr = true
+		return m, nil
+	}
+	if m.sessionStates == nil {
+		m.sessionStates = make(map[string]storage.SessionDocumentState)
+	}
+	m.sessionStates[doc.ID] = state
+	updated := false
+	for _, item := range m.sessionDocs {
+		if item.Document != nil && item.Document.ID == doc.ID {
+			item.State = state
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		m.sessionDocs = append(m.sessionDocs, &storage.SessionDocument{
+			Document: doc, State: state, AddedAt: time.Now().UTC(),
+		})
+	}
+	m.statusMsg = fmt.Sprintf("Session %s: %s", state, doc.Title)
+	m.statusIsErr = false
+	m.updatePreviewContent()
+	return m, nil
 }
 
 func (m *Model) nextPanel() {
@@ -1043,7 +1136,19 @@ func (m *Model) showAnswer() {
 		fmt.Sprintf("Confidence: %s (%.2f)", strings.ToUpper(conf.Level), conf.Score),
 	))
 	sb.WriteString("\n")
-	sb.WriteString(styles.ResultSourceStyle.Render(fmt.Sprintf("Based on %d sources", min(5, len(m.results)))))
+	sourceSummary := fmt.Sprintf("Context: %d/%d sources (first %d, %d chars each)", len(m.currentSources), m.contextTotal, maxAnswerDocuments, maxAnswerDocumentRunes)
+	sb.WriteString(styles.ResultSourceStyle.Render(sourceSummary))
+	historyTotal := len(m.conversation)
+	if m.session != nil {
+		historyTotal = len(m.sessionTurns)
+	}
+	if historyTotal > 0 {
+		historySummary := fmt.Sprintf("\nHistory: %d/%d turns", len(m.conversation), historyTotal)
+		if historyTotal > len(m.conversation) {
+			historySummary += " (oldest omitted)"
+		}
+		sb.WriteString(styles.ResultSourceStyle.Render(historySummary))
+	}
 	m.preview.SetContent(sb.String())
 }
 
@@ -1061,8 +1166,14 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	ch := make(chan streamChunkMsg, 64)
 	m.streamCh = ch
 
-	contexts := buildAnswerContexts(docs)
-	history := m.conversation
+	candidates := m.answerCandidates(docs)
+	m.contextTotal = len(candidates)
+	if len(candidates) > maxAnswerDocuments {
+		candidates = candidates[:maxAnswerDocuments]
+	}
+	m.currentSources = append([]*storage.Document(nil), candidates...)
+	contexts := buildAnswerContexts(m.currentSources)
+	history := boundedConversation(m.conversation)
 
 	go func() {
 		defer close(ch)
@@ -1083,39 +1194,113 @@ func (m *Model) startStreaming(question string, docs []*storage.Document) tea.Cm
 	return m.readNextChunk()
 }
 
-// recordConversationTurn appends the just-completed Q&A to the conversation
-// history (capped to the last few turns) so follow-up questions have context.
-func (m *Model) recordConversationTurn() {
+// recordConversationTurn appends the just-completed Q&A to bounded prompt
+// history and, for an explicitly resumed session, persists the full turn and a
+// citation snapshot. Ordinary TUI conversations are never written to disk.
+func (m *Model) recordConversationTurn() error {
 	if m.currentQuestion == "" || m.answerText == "" {
-		return
+		return nil
 	}
-	m.conversation = append(m.conversation, query.ConversationTurn{
+	turn := &storage.SessionTurn{
 		Question: m.currentQuestion,
 		Answer:   m.answerText,
-	})
-	const maxTurns = 4
-	if len(m.conversation) > maxTurns {
-		m.conversation = m.conversation[len(m.conversation)-maxTurns:]
 	}
+	for _, doc := range m.currentSources {
+		turn.Citations = append(turn.Citations, storage.SessionCitation{
+			DocumentID: doc.ID, Title: doc.Title, Path: doc.Path, Source: doc.Source,
+		})
+	}
+	var persistErr error
+	if m.session != nil {
+		turn.SessionID = m.session.ID
+		if err := m.db.AddSessionTurn(context.Background(), turn); err != nil {
+			persistErr = err
+		} else {
+			m.sessionTurns = append(m.sessionTurns, turn)
+		}
+	}
+	m.conversation = append(m.conversation, query.ConversationTurn{
+		Question: truncateRunes(m.currentQuestion, maxHistoryQuestionRunes),
+		Answer:   truncateRunes(m.answerText, maxHistoryAnswerRunes),
+	})
+	if len(m.conversation) > maxConversationTurns {
+		m.conversation = m.conversation[len(m.conversation)-maxConversationTurns:]
+	}
+	return persistErr
 }
 
 func (m *Model) answerContexts() []string {
-	return buildAnswerContexts(m.results)
+	return buildAnswerContexts(m.currentSources)
 }
 
 func buildAnswerContexts(docs []*storage.Document) []string {
-	contexts := make([]string, 0, 5)
+	contexts := make([]string, 0, maxAnswerDocuments)
 	for i, doc := range docs {
-		if i >= 5 {
+		if i >= maxAnswerDocuments {
 			break
 		}
-		content := doc.Content
-		if len(content) > 1000 {
-			content = content[:1000]
-		}
+		content := truncateRunes(doc.Content, maxAnswerDocumentRunes)
 		contexts = append(contexts, content)
 	}
 	return contexts
+}
+
+func boundedConversation(turns []query.ConversationTurn) []query.ConversationTurn {
+	start := max(0, len(turns)-maxConversationTurns)
+	bounded := make([]query.ConversationTurn, 0, len(turns)-start)
+	for _, turn := range turns[start:] {
+		bounded = append(bounded, query.ConversationTurn{
+			Question: truncateRunes(turn.Question, maxHistoryQuestionRunes),
+			Answer:   truncateRunes(turn.Answer, maxHistoryAnswerRunes),
+		})
+	}
+	return bounded
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func (m *Model) answerCandidates(results []*storage.Document) []*storage.Document {
+	seen := make(map[string]bool)
+	excluded := make(map[string]bool)
+	for id, state := range m.sessionStates {
+		if state == storage.SessionDocumentExcluded {
+			excluded[id] = true
+		}
+	}
+	candidates := make([]*storage.Document, 0, len(m.sessionDocs)+len(results))
+	appendDocument := func(doc *storage.Document) {
+		if doc == nil || seen[doc.ID] || excluded[doc.ID] {
+			return
+		}
+		seen[doc.ID] = true
+		candidates = append(candidates, doc)
+	}
+	for _, item := range m.sessionDocs {
+		if item.State == storage.SessionDocumentPinned {
+			appendDocument(item.Document)
+		}
+	}
+	for _, item := range m.sessionDocs {
+		if item.State == storage.SessionDocumentIncluded {
+			appendDocument(item.Document)
+		}
+	}
+	for _, doc := range results {
+		appendDocument(doc)
+	}
+	return candidates
+}
+
+func (m *Model) resetEphemeralConversation() {
+	if m.session == nil {
+		m.conversation = nil
+	}
 }
 
 func (m *Model) cancelStream() {
@@ -1153,6 +1338,9 @@ func (m *Model) updatePreviewContent() {
 	sb.WriteString("\n")
 	if tags := doc.TagsString(); tags != "" {
 		sb.WriteString("Tags: " + tags + "\n")
+	}
+	if state, ok := m.sessionStates[doc.ID]; ok {
+		sb.WriteString("Session context: " + string(state) + "\n")
 	}
 	if reasons := m.relatedReasons[doc.ID]; len(reasons) > 0 {
 		labels := make([]string, 0, len(reasons))
@@ -1216,6 +1404,9 @@ func (m Model) View() string {
 	// Header
 	header := styles.TitleStyle.Render("MindCLI") +
 		styles.SubtitleStyle.Render(" - Personal Knowledge Search")
+	if m.session != nil {
+		header += styles.SubtitleStyle.Render(" [session: " + m.redactor.Redact(m.session.Name) + "]")
+	}
 
 	// Search input
 	searchStyle := styles.PanelStyle
@@ -1313,6 +1504,9 @@ func (m Model) renderResults(width, height int) string {
 		var tagStr string
 		for _, tag := range doc.Tags() {
 			tagStr += " " + styles.TagBadge(tag)
+		}
+		if state, ok := m.sessionStates[doc.ID]; ok {
+			tagStr += " " + styles.TagBadge(string(state))
 		}
 		sb.WriteString(line + " " + source + tagStr + "\n")
 	}
@@ -1431,6 +1625,7 @@ func (m Model) renderHelp() string {
 		{"r", "Refresh list"},
 		{"R", "Find related documents"},
 		{"Ctrl+n", "Quick capture to inbox"},
+		{"A / P / X", "Add, pin, or exclude document in resumed session"},
 		{"i", "Index sources now"},
 		{"f", "Cycle source filter"},
 		{"t", "Add tag"},

@@ -418,6 +418,10 @@ func searchResults(ctx context.Context, s *stores, parsed query.ParsedQuery, lim
 }
 
 func runTUI() error {
+	return runTUIWithSession("")
+}
+
+func runTUIWithSession(sessionName string) error {
 	s, err := openStores(openOpts{vectors: true, embedder: true, llm: true, hybrid: true})
 	if err != nil {
 		return err
@@ -451,6 +455,21 @@ func runTUI() error {
 	}
 
 	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor, reindex)
+	if strings.TrimSpace(sessionName) != "" {
+		session, err := sessionByName(context.Background(), s.db, sessionName)
+		if err != nil {
+			return err
+		}
+		turns, err := s.db.ListSessionTurns(context.Background(), session.ID)
+		if err != nil {
+			return fmt.Errorf("loading session turns: %w", err)
+		}
+		documents, err := s.db.ListSessionDocuments(context.Background(), session.ID)
+		if err != nil {
+			return fmt.Errorf("loading session context: %w", err)
+		}
+		model.SetSession(session, turns, documents)
+	}
 	model.SetCapture(func(ctx context.Context, content string) (string, error) {
 		result, err := captureAndIndex(ctx, s, capture.Request{Content: content, Tags: []string{"inbox"}})
 		return result.Path, err
