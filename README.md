@@ -13,6 +13,7 @@ OpenAI-compatible API.
 - **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
 - **Local AI by default** — Embeddings and streaming LLM answers via Ollama, with optional OpenAI provider
 - **Conversational follow-ups** — Ask a question, then follow up ("tell me more") with prior turns kept in context
+- **Research sessions** — Explicitly persist named Q&A threads, source context, citations, and Markdown briefs
 - **Beautiful TUI** — Three-panel Bubble Tea interface with live preview and real-time streaming
 - **Export** — Search results to JSON, CSV, or Markdown
 - **Tagging** — Manual tags on any document, displayed in TUI and searchable
@@ -73,6 +74,9 @@ mindcli add "Idea for the search ranking"     # Capture text into the Markdown i
 pbpaste | mindcli add --tag inbox             # Capture stdin with tags
 mindcli add --editor --collection research    # Capture through $VISUAL or $EDITOR
 mindcli save https://example.com/article      # Save a normalized URL, optionally with reader text
+mindcli session create release-research       # Create an explicitly persistent research session
+mindcli session resume release-research       # Resume the session in the TUI
+mindcli session export release-research --format markdown --output brief.md
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -117,6 +121,7 @@ arguments to see command-specific usage.
 | `R` | Replace results with documents related to the selection |
 | `i` | Index sources now (in-app) |
 | `Ctrl+n` | Quick capture a thought to the Markdown inbox |
+| `A` / `P` / `X` | Add, pin, or exclude the selected document in a resumed session |
 | `f` | Cycle source filter (all → markdown → pdf → …) |
 | `t` | Add tag to selected document |
 | `c` | Add to collection |
@@ -250,6 +255,43 @@ cleartext under the data directory, and `redact_patterns` applies at display
 time only. Set `privacy.redact_content: true` to redact content before it is
 stored. See [PRIVACY.md](PRIVACY.md) for the full threat model,
 source-specific controls, and at-rest-encryption guidance.
+
+## Persistent research sessions
+
+Named sessions are opt-in. The ordinary `mindcli` TUI keeps only its four most
+recent follow-up turns in memory and clears them when search is cleared; it does
+not write that conversation to disk. `mindcli session resume NAME` is the explicit
+boundary that persists completed questions, generated answers, timestamps, and
+citation snapshots in the active SQLite database.
+
+```bash
+mindcli session create release-research
+mindcli session resume release-research
+mindcli session list
+mindcli session show release-research
+
+# Manage reusable context from scripts as well as the TUI.
+mindcli session add release-research ~/notes/plan.md
+mindcli session pin release-research DOCUMENT_ID
+mindcli session exclude release-research ~/notes/obsolete.md
+mindcli session remove release-research DOCUMENT_ID
+
+mindcli session export release-research --format markdown --output brief.md
+mindcli session delete release-research
+```
+
+In a resumed TUI, `A` adds the selected document to the reusable context set,
+`P` pins it ahead of ordinary search results, and `X` excludes it from later
+answers. Each prompt uses at most five distinct documents in this deterministic
+order: pinned, added, then current search results. Each document contributes at
+most 1,000 Unicode characters. Follow-ups use the newest four turns, bounded to
+1,000 question and 4,000 answer characters per turn. The answer preview shows
+both used/available counts and says when older history was omitted.
+
+Markdown briefs contain the conversation, the last answer as a final synthesis,
+per-turn citations with stable document IDs, and a deduplicated source list.
+Generated answers are labeled as generated content. Brief files created through
+`--output` use mode `0600`.
 
 ## MCP server
 

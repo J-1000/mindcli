@@ -28,6 +28,11 @@ By default, indexed content is stored **in cleartext**:
 | HNSW | `vectors.graph` | chunk embeddings (+ `vectors.graph.meta.json` model/dim) |
 | Cache | `embeddings.db` | content-hash → embedding vectors |
 
+Named research sessions are also stored in `mindcli.db`: full questions,
+generated answers, timestamps, citation snapshots, and included/pinned/excluded
+document IDs. This happens only after `mindcli session resume NAME`; the default
+TUI's follow-up history remains memory-only.
+
 So a note, PDF, email, browser title, fetched browser page, capture, or clipboard
 entry that you index is searchable in cleartext on disk. Captures also remain
 as cleartext Markdown source files in the configured inbox.
@@ -114,6 +119,28 @@ remote provider, the same document/question transmission described above under
 does not alter the stored source text sent to a configured model provider; use
 index-time redaction when that is required by your threat model.
 
+## Research-session boundary
+
+Resumed research sessions deliberately persist the full completed question and
+generated answer, plus a snapshot of each cited source's ID, title, path, and
+source type. Context rules reference live indexed documents. Deleting a session
+removes its turns and context rules but does not delete the cited source
+documents; deleting a source removes its live context rule while prior citation
+snapshots remain in the session brief.
+
+Prompt construction is deterministic and visible in the TUI: at most five
+documents contribute 1,000 Unicode characters each, ordered pinned, added, then
+search results. Only the newest four turns are sent as follow-up history, with
+question/answer bounds shown in the interface. Older persisted turns remain
+available for export but are not silently sent as prompt history.
+
+Session output and Markdown briefs receive display-time redaction. The raw
+session stored in SQLite is not changed unless index-time redaction already
+removed matching text from its document sources; questions and model answers
+themselves are stored as entered/generated. Brief files created with `--output`
+use mode `0600`. If the configured LLM is remote, new questions, bounded source
+context, and bounded recent session history are sent to that provider.
+
 ## What MindCLI does not (yet) do
 
 - **No at-rest encryption.** The database and indexes are not encrypted. If your
@@ -127,4 +154,6 @@ index-time redaction when that is required by your threat model.
 
 - `mindcli clipboard clear` / `cleanup` — remove clipboard entries.
 - `mindcli clean` — remove documents whose source files no longer exist.
+- `mindcli session delete NAME` — remove a session, its conversation, and its
+  context rules.
 - Delete the data directory to wipe everything.
