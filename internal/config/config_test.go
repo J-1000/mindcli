@@ -165,8 +165,48 @@ func TestEnsureConfigDir(t *testing.T) {
 
 	// Verify the directory exists
 	dir, _ := ConfigDir()
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	info, err := os.Stat(dir)
+	if os.IsNotExist(err) {
 		t.Errorf("EnsureConfigDir() did not create directory: %s", dir)
+	} else if err != nil {
+		t.Fatalf("stat config directory: %v", err)
+	} else if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("config directory mode = %o, want 700", got)
+	}
+}
+
+func TestSaveUsesPrivatePermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, "mindcli")
+	configPath := filepath.Join(configDir, "config.yaml")
+	t.Setenv("MINDCLI_CONFIG_DIR", configDir)
+	t.Setenv("MINDCLI_CONFIG_PATH", configPath)
+
+	cfg := Default()
+	cfg.Embeddings.OpenAIKey = "secret-key"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("new config mode = %o, want 600", got)
+	}
+
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("saving existing config: %v", err)
+	}
+	info, err = os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("existing config mode after Save = %o, want 600", got)
 	}
 }
 
@@ -186,8 +226,13 @@ func TestConfigDataDir(t *testing.T) {
 	}
 
 	// Verify directory was created
-	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+	info, err := os.Stat(dataDir)
+	if os.IsNotExist(err) {
 		t.Error("DataDir() did not create the directory")
+	} else if err != nil {
+		t.Fatalf("stat data directory: %v", err)
+	} else if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("data directory mode = %o, want 700", got)
 	}
 }
 

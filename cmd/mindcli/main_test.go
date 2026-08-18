@@ -250,6 +250,55 @@ func TestSyncDocumentTagsPersistsAndReindexes(t *testing.T) {
 	}
 }
 
+func TestRunExportProtectsOutputFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Join(tmpDir, "config"))
+	t.Setenv("MINDCLI_STORAGE_PATH", dataDir)
+
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(filepath.Join(dataDir, "mindcli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchIndex, err := search.NewBleveIndex(filepath.Join(dataDir, "search.bleve"))
+	if err != nil {
+		closeTestDB(t, db)
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	doc := &storage.Document{
+		ID: "exported", Source: storage.SourceMarkdown, Path: "/exported.md",
+		Title: "Exported", Content: "unique-export-term", ContentHash: "hash",
+		IndexedAt: now, ModifiedAt: now,
+	}
+	if err := db.InsertDocument(context.Background(), doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := searchIndex.Index(context.Background(), doc); err != nil {
+		t.Fatal(err)
+	}
+	closeTestIndex(t, searchIndex)
+	closeTestDB(t, db)
+
+	outputPath := filepath.Join(tmpDir, "results.json")
+	if err := os.WriteFile(outputPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runExport([]string{"--output", outputPath, "unique-export-term"}); err != nil {
+		t.Fatalf("runExport() error = %v", err)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("export mode = %o, want 600", got)
+	}
+}
+
 // TestSearchWithSourceFilter verifies the query parser integrates with search for source filtering.
 func TestSearchWithSourceFilter(t *testing.T) {
 	tmpDir := t.TempDir()
