@@ -3,6 +3,7 @@ package storage
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,53 @@ func (d *Document) SetMetadataFromJSON(jsonStr string) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(jsonStr), &d.Metadata)
+}
+
+// Tags returns the document's source-extracted and database-backed tags as a
+// single, de-duplicated list. Source parsers store tags in "tags" while tags
+// managed through the CLI/TUI are attached as "stored_tags".
+func (d *Document) Tags() []string {
+	if d == nil || d.Metadata == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var tags []string
+	for _, field := range []string{"tags", "stored_tags"} {
+		for _, tag := range strings.Split(d.Metadata[field], ",") {
+			tag = strings.TrimSpace(tag)
+			if tag == "" {
+				continue
+			}
+			key := strings.ToLower(tag)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// TagsString returns Tags in the comma-separated representation used by the
+// search index and text-based output formats.
+func (d *Document) TagsString() string {
+	return strings.Join(d.Tags(), ",")
+}
+
+// SetStoredTags replaces the database-backed tag projection in Metadata.
+func (d *Document) SetStoredTags(tags []string) {
+	if len(tags) == 0 {
+		if d.Metadata != nil {
+			delete(d.Metadata, "stored_tags")
+		}
+		return
+	}
+	if d.Metadata == nil {
+		d.Metadata = make(map[string]string)
+	}
+	d.Metadata["stored_tags"] = strings.Join(tags, ",")
 }
 
 // Chunk represents a chunk of a document for embedding.

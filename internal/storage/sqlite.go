@@ -572,6 +572,21 @@ func (d *DB) GetTags(ctx context.Context, docID string) ([]string, error) {
 	return tags, rows.Err()
 }
 
+// AttachStoredTags projects tags from the normalized document_tags table onto
+// a document so callers can persist, display, export, and index them together
+// with tags extracted by source parsers.
+func (d *DB) AttachStoredTags(ctx context.Context, doc *Document) error {
+	if doc == nil {
+		return errors.New("document is nil")
+	}
+	tags, err := d.GetTags(ctx, doc.ID)
+	if err != nil {
+		return err
+	}
+	doc.SetStoredTags(tags)
+	return nil
+}
+
 // ListAllTags returns all unique tags across all documents.
 func (d *DB) ListAllTags(ctx context.Context) ([]string, error) {
 	rows, err := d.db.QueryContext(ctx,
