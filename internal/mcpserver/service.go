@@ -168,9 +168,14 @@ type RelatedDocumentsOutput struct {
 }
 
 type AskOutput struct {
-	Answer     string                 `json:"answer"`
-	Confidence query.AnswerConfidence `json:"confidence"`
-	Citations  []DocumentOutput       `json:"citations"`
+	Answer     string           `json:"answer"`
+	Confidence ConfidenceOutput `json:"confidence"`
+	Citations  []DocumentOutput `json:"citations"`
+}
+
+type ConfidenceOutput struct {
+	Score float64 `json:"score"`
+	Level string  `json:"level"`
 }
 
 func (s *Service) Search(ctx context.Context, input SearchInput) (SearchOutput, error) {
@@ -371,7 +376,7 @@ func (s *Service) Ask(ctx context.Context, input AskInput) (AskOutput, error) {
 		return AskOutput{}, err
 	}
 	if len(searchOutput.Results) == 0 {
-		return AskOutput{Answer: "No relevant documents found.", Confidence: query.EstimateAnswerConfidence(question, nil)}, nil
+		return AskOutput{Answer: "No relevant documents found.", Confidence: confidenceOutput(query.EstimateAnswerConfidence(question, nil))}, nil
 	}
 
 	contexts := make([]string, 0, MaxAskSources)
@@ -394,8 +399,12 @@ func (s *Service) Ask(ctx context.Context, input AskInput) (AskOutput, error) {
 	}
 	answer, _ = truncateUTF8(s.redactor.Redact(answer), MaxAnswerBytes)
 	return AskOutput{
-		Answer: answer, Confidence: query.EstimateAnswerConfidence(question, contexts), Citations: citations,
+		Answer: answer, Confidence: confidenceOutput(query.EstimateAnswerConfidence(question, contexts)), Citations: citations,
 	}, nil
+}
+
+func confidenceOutput(value query.AnswerConfidence) ConfidenceOutput {
+	return ConfidenceOutput{Score: value.Score, Level: value.Level}
 }
 
 func (s *Service) documentOutput(doc *storage.Document, includeContent bool, maxContentBytes int) DocumentOutput {
