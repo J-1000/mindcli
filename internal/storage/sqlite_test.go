@@ -1151,6 +1151,37 @@ func TestResolveCollectionDocumentIDs(t *testing.T) {
 	}
 }
 
+func TestListRecentDocumentsUsesIndexedOrModifiedActivity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	docs := []*Document{
+		{ID: "old", Source: SourceMarkdown, Path: "/old", Title: "Old", ContentHash: "old", IndexedAt: base.Add(-10 * 24 * time.Hour), ModifiedAt: base.Add(-10 * 24 * time.Hour)},
+		{ID: "indexed", Source: SourceMarkdown, Path: "/indexed", Title: "Indexed", ContentHash: "indexed", IndexedAt: base.Add(-time.Hour), ModifiedAt: base.Add(-20 * 24 * time.Hour)},
+		{ID: "modified", Source: SourceMarkdown, Path: "/modified", Title: "Modified", ContentHash: "modified", IndexedAt: base.Add(-20 * 24 * time.Hour), ModifiedAt: base.Add(-2 * time.Hour)},
+		{ID: "boundary", Source: SourceMarkdown, Path: "/boundary", Title: "Boundary", ContentHash: "boundary", IndexedAt: base, ModifiedAt: base},
+	}
+	for _, doc := range docs {
+		mustSucceed(t, db.InsertDocument(ctx, doc))
+	}
+
+	got, err := db.ListRecentDocuments(ctx, base.Add(-7*24*time.Hour), base, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "indexed" || got[1].ID != "modified" {
+		t.Fatalf("recent documents = %+v, want indexed then modified", got)
+	}
+	limited, err := db.ListRecentDocuments(ctx, time.Time{}, time.Time{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 || limited[0].ID != "boundary" {
+		t.Fatalf("limited recent documents = %+v, want boundary", limited)
+	}
+}
+
 func TestGetCollectionDocumentsEmpty(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
