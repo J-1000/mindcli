@@ -157,3 +157,42 @@ func TestHybridSearch_FallsBackToBM25WhenNoVectors(t *testing.T) {
 		t.Errorf("top result = %s, want doc2", results[0].Document.ID)
 	}
 }
+
+func TestHybridSearchParsedAppliesCollectionFilter(t *testing.T) {
+	db, bleve, vectors := newHybridTestStores(t)
+	ctx := context.Background()
+	reading := &storage.Collection{Name: "reading"}
+	if err := db.CreateCollection(ctx, reading); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddToCollection(ctx, reading.ID, "doc2"); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := ParseQueryStrict(`go collection:reading`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHybridSearcher(bleve, vectors, keywordEmbedder{}, db, 0.5)
+	results, err := h.SearchParsed(ctx, parsed, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Document.ID != "doc2" {
+		t.Fatalf("collection-filtered hybrid results = %+v, want only doc2", results)
+	}
+}
+
+func TestHybridSearchParsedRejectsUnknownCollection(t *testing.T) {
+	db, bleve, vectors := newHybridTestStores(t)
+	parsed, err := ParseQueryStrict(`rust collection:missing`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHybridSearcher(bleve, vectors, keywordEmbedder{}, db, 0.5)
+	_, err = h.SearchParsed(context.Background(), parsed, 10)
+	if err == nil || !containsFold(err.Error(), `collection "missing" not found`) {
+		t.Fatalf("SearchParsed() error = %v, want unknown collection error", err)
+	}
+}

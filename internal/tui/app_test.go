@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/privacy"
 	"github.com/J-1000/mindcli/internal/query"
 	"github.com/J-1000/mindcli/internal/search"
@@ -579,6 +580,32 @@ func TestSearchResultsWithTimeFilter(t *testing.T) {
 
 	if !strings.Contains(m.statusMsg, "[last week]") {
 		t.Errorf("statusMsg = %q, want it to contain '[last week]'", m.statusMsg)
+	}
+}
+
+func TestSearchResultsShowsAllStructuredFilters(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	parsed := query.ParsedQuery{Filters: filter.Set{
+		Sources:       []storage.Source{storage.SourceBrowser},
+		Tags:          []string{"project"},
+		ExcludedTags:  []string{"archived"},
+		Collections:   []string{"reading"},
+		PathPrefixes:  []string{"Work/"},
+		Domains:       []string{"arxiv.org"},
+		Kinds:         []string{"bookmark"},
+		ExactPhrases:  []string{"launch plan"},
+		ExcludedTerms: []string{"draft"},
+		RelativeTime:  "last week",
+	}}
+	updated, _ := model.Update(searchResultsMsg{parsed: parsed})
+	status := updated.(Model).statusMsg
+	for _, label := range parsed.Filters.Labels() {
+		if !strings.Contains(status, "["+label+"]") {
+			t.Errorf("statusMsg = %q, want active filter %q", status, label)
+		}
 	}
 }
 

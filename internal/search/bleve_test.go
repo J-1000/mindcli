@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/storage"
 )
 
@@ -206,6 +207,95 @@ func TestBleveIndex_SourceFilter(t *testing.T) {
 		if r.ID != "1" && r.ID != "3" {
 			t.Errorf("unexpected result ID: %s", r.ID)
 		}
+	}
+}
+
+func TestBleveIndex_TypedStructuredFilters(t *testing.T) {
+	indexPath := filepath.Join(t.TempDir(), "test.bleve")
+	idx, err := NewBleveIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestIndex(t, idx)
+
+	ctx := context.Background()
+	modified := func(date string) time.Time {
+		value, err := time.Parse("2006-01-02", date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	docs := []*storage.Document{
+		{
+			ID: "browser-current", Source: storage.SourceBrowser,
+			Path: "https://export.arxiv.org/abs/1", Title: "Launch Plan", Content: "exact launch plan databases",
+			Metadata:   map[string]string{"tags": "project", "kind": "history,bookmark", "normalized_url": "https://export.arxiv.org/abs/1"},
+			ModifiedAt: modified("2026-07-10"),
+		},
+		{
+			ID: "browser-archived", Source: storage.SourceBrowser,
+			Path: "https://arxiv.org/abs/2", Title: "Old Launch Plan", Content: "exact launch plan archived draft",
+			Metadata:   map[string]string{"tags": "project,archived", "kind": "bookmark", "normalized_url": "https://arxiv.org/abs/2"},
+			ModifiedAt: modified("2024-12-01"),
+		},
+		{
+			ID: "pdf-work", Source: storage.SourcePDF,
+			Path: "/Users/test/Work/research.pdf", Title: "Launch Research", Content: "exact launch plan databases",
+			Metadata: map[string]string{"tags": "project"}, ModifiedAt: modified("2026-07-12"),
+		},
+		{
+			ID: "email", Source: storage.SourceEmail,
+			Path: "/mail/launch.eml", Title: "Launch message", Content: "launch plan draft",
+			Metadata: map[string]string{"tags": "project"}, ModifiedAt: modified("2026-07-14"),
+		},
+	}
+	for _, doc := range docs {
+		if err := idx.Index(ctx, doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	date := func(value string) *time.Time {
+		parsed := modified(value)
+		return &parsed
+	}
+	tests := []struct {
+		name    string
+		text    string
+		filters filter.Set
+		wantIDs []string
+	}{
+		{name: "source", filters: filter.Set{Sources: []storage.Source{storage.SourceEmail}}, wantIDs: []string{"email"}},
+		{name: "included and excluded tags", filters: filter.Set{Tags: []string{"project"}, ExcludedTags: []string{"archived"}}, wantIDs: []string{"browser-current", "pdf-work", "email"}},
+		{name: "date range", filters: filter.Set{After: date("2026-07-11"), Before: date("2026-07-14")}, wantIDs: []string{"pdf-work"}},
+		{name: "path contains case insensitive", filters: filter.Set{PathPrefixes: []string{"work/"}}, wantIDs: []string{"pdf-work"}},
+		{name: "parent domain", filters: filter.Set{Domains: []string{"arxiv.org"}}, wantIDs: []string{"browser-current", "browser-archived"}},
+		{name: "record kind", filters: filter.Set{Kinds: []string{"history"}}, wantIDs: []string{"browser-current"}},
+		{name: "exact phrase", filters: filter.Set{ExactPhrases: []string{"exact launch plan"}}, wantIDs: []string{"browser-current", "browser-archived", "pdf-work"}},
+		{name: "negated term", text: "launch", filters: filter.Set{ExcludedTerms: []string{"draft"}}, wantIDs: []string{"browser-current", "pdf-work"}},
+		{name: "resolved document IDs", filters: filter.Set{DocumentIDs: []string{"pdf-work", "email"}}, wantIDs: []string{"pdf-work", "email"}},
+		{name: "resolved empty collection", filters: filter.Set{DocumentIDs: []string{}}, wantIDs: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := idx.SearchFiltered(ctx, tt.text, tt.filters, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(map[string]bool, len(results))
+			for _, result := range results {
+				got[result.ID] = true
+			}
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("IDs = %#v, want %#v", got, tt.wantIDs)
+			}
+			for _, id := range tt.wantIDs {
+				if !got[id] {
+					t.Errorf("missing ID %q from %#v", id, got)
+				}
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1111,6 +1112,42 @@ func TestGetCollectionDocuments(t *testing.T) {
 	}
 	if len(docs) != 2 {
 		t.Errorf("GetCollectionDocuments() returned %d, want 2", len(docs))
+	}
+}
+
+func TestResolveCollectionDocumentIDs(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	docs := []*Document{
+		{ID: "resolve-1", Source: SourceMarkdown, Path: "/1.md", ContentHash: "1", IndexedAt: now, ModifiedAt: now},
+		{ID: "resolve-2", Source: SourcePDF, Path: "/2.pdf", ContentHash: "2", IndexedAt: now, ModifiedAt: now},
+	}
+	for _, doc := range docs {
+		mustSucceed(t, db.UpsertDocument(ctx, doc))
+	}
+	reading := &Collection{Name: "reading"}
+	research := &Collection{Name: "research"}
+	mustSucceed(t, db.CreateCollection(ctx, reading))
+	mustSucceed(t, db.CreateCollection(ctx, research))
+	mustSucceed(t, db.AddToCollection(ctx, reading.ID, docs[0].ID))
+	mustSucceed(t, db.AddToCollection(ctx, research.ID, docs[0].ID))
+	mustSucceed(t, db.AddToCollection(ctx, research.ID, docs[1].ID))
+
+	ids, err := db.ResolveCollectionDocumentIDs(ctx, []string{"reading", "research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if len(seen) != 2 || !seen[docs[0].ID] || !seen[docs[1].ID] {
+		t.Fatalf("resolved IDs = %#v", ids)
+	}
+	if _, err := db.ResolveCollectionDocumentIDs(ctx, []string{"missing"}); err == nil || !strings.Contains(err.Error(), `collection "missing" not found`) {
+		t.Fatalf("missing collection error = %v", err)
 	}
 }
 

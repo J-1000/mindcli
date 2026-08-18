@@ -120,6 +120,139 @@ func TestParseQueryOriginalPreserved(t *testing.T) {
 	}
 }
 
+func TestParseQueryStrictStructuredFilters(t *testing.T) {
+	parsed, err := ParseQueryStrict(`source:email tag:project after:2026-07-01 "launch plan"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Filters.Sources) != 1 || parsed.Filters.Sources[0] != storage.SourceEmail {
+		t.Fatalf("sources = %#v, want email", parsed.Filters.Sources)
+	}
+	if len(parsed.Filters.Tags) != 1 || parsed.Filters.Tags[0] != "project" {
+		t.Fatalf("tags = %#v, want project", parsed.Filters.Tags)
+	}
+	if parsed.Filters.After == nil || parsed.Filters.After.Format("2006-01-02") != "2026-07-01" {
+		t.Fatalf("after = %v", parsed.Filters.After)
+	}
+	if len(parsed.Filters.ExactPhrases) != 1 || parsed.Filters.ExactPhrases[0] != "launch plan" {
+		t.Fatalf("exact phrases = %#v", parsed.Filters.ExactPhrases)
+	}
+	if parsed.Text != "" || parsed.SearchTerms != `"launch plan"` {
+		t.Errorf("text/search terms = %q/%q", parsed.Text, parsed.SearchTerms)
+	}
+}
+
+func TestParseQueryStrictFilterExamples(t *testing.T) {
+	tests := []struct {
+		query string
+		check func(*testing.T, ParsedQuery)
+	}{
+		{
+			query: `collection:reading domain:arxiv.org -tag:archived`,
+			check: func(t *testing.T, parsed ParsedQuery) {
+				if got := parsed.Filters.Collections; len(got) != 1 || got[0] != "reading" {
+					t.Errorf("collections = %#v", got)
+				}
+				if got := parsed.Filters.Domains; len(got) != 1 || got[0] != "arxiv.org" {
+					t.Errorf("domains = %#v", got)
+				}
+				if got := parsed.Filters.ExcludedTags; len(got) != 1 || got[0] != "archived" {
+					t.Errorf("excluded tags = %#v", got)
+				}
+			},
+		},
+		{
+			query: `path:work/ type:pdf before:2025-01-01`,
+			check: func(t *testing.T, parsed ParsedQuery) {
+				if parsed.SourceFilter != "pdf" || parsed.Filters.PathPrefixes[0] != "work/" {
+					t.Errorf("parsed = %+v", parsed)
+				}
+				if parsed.Filters.Before == nil || parsed.Filters.Before.Format("2006-01-02") != "2025-01-01" {
+					t.Errorf("before = %v", parsed.Filters.Before)
+				}
+			},
+		},
+		{
+			query: `source:browser kind:bookmark this week databases`,
+			check: func(t *testing.T, parsed ParsedQuery) {
+				if parsed.Filters.Kinds[0] != "bookmark" || parsed.Filters.RelativeTime != "this week" {
+					t.Errorf("filters = %+v", parsed.Filters)
+				}
+				if parsed.Text != "databases" {
+					t.Errorf("Text = %q", parsed.Text)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			parsed, err := ParseQueryStrict(tt.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.check(t, parsed)
+		})
+	}
+}
+
+func TestParseQueryStrictNegationQuotingEscapingAndPrecedence(t *testing.T) {
+	parsed, err := ParseQueryStrict(`source:email in my notes after:2026-01-01 last week tag:"Project Alpha" launch\ plan foo\:bar -draft -"old version"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Filters.Sources) != 1 || parsed.Filters.Sources[0] != storage.SourceEmail {
+		t.Fatalf("explicit source did not take precedence: %#v", parsed.Filters.Sources)
+	}
+	if parsed.Filters.RelativeTime != "" || parsed.Filters.After == nil {
+		t.Fatalf("explicit date did not take precedence: %+v", parsed.Filters)
+	}
+	if len(parsed.Filters.Tags) != 1 || parsed.Filters.Tags[0] != "project alpha" {
+		t.Errorf("quoted tag = %#v", parsed.Filters.Tags)
+	}
+	if len(parsed.Filters.ExactPhrases) != 1 || parsed.Filters.ExactPhrases[0] != "launch plan" {
+		t.Errorf("escaped phrase = %#v", parsed.Filters.ExactPhrases)
+	}
+	if got := parsed.Filters.ExcludedTerms; len(got) != 2 || got[0] != "draft" || got[1] != "old version" {
+		t.Errorf("excluded terms = %#v", got)
+	}
+	if parsed.Text != "foo:bar" {
+		t.Errorf("escaped colon text = %q", parsed.Text)
+	}
+}
+
+func TestParseQueryStrictErrors(t *testing.T) {
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{query: "unknown:value", want: `unknown filter "unknown"`},
+		{query: "after:yesterday", want: "invalid after date"},
+		{query: "before:2026-01-01 after:2026-02-01", want: "after date must be earlier"},
+		{query: `tag:"unfinished`, want: "unterminated quote"},
+		{query: `source:`, want: `filter "source" requires a value`},
+		{query: `-source:email`, want: `filter "source" cannot be negated`},
+		{query: `word\`, want: "incomplete escape"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			_, err := ParseQueryStrict(tt.query)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseQueryStrictDoesNotTreatURLAsFilter(t *testing.T) {
+	parsed, err := ParseQueryStrict("https://example.com/article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Text != "https://example.com/article" {
+		t.Errorf("URL text = %q", parsed.Text)
+	}
+}
+
 func TestBuildRAGPrompt(t *testing.T) {
 	prompt := buildRAGPrompt("What is Go?", []string{"Go is a language", "Go has goroutines"})
 
