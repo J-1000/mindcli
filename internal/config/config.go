@@ -18,6 +18,7 @@ type Config struct {
 	Search     SearchConfig     `yaml:"search"`
 	Indexing   IndexingConfig   `yaml:"indexing"`
 	Storage    StorageConfig    `yaml:"storage"`
+	Capture    CaptureConfig    `yaml:"capture"`
 	Privacy    PrivacyConfig    `yaml:"privacy"`
 }
 
@@ -100,6 +101,11 @@ type StorageConfig struct {
 	Path string `yaml:"path"`
 }
 
+// CaptureConfig configures the portable Markdown inbox used by add/save.
+type CaptureConfig struct {
+	Inbox string `yaml:"inbox"`
+}
+
 // PrivacyConfig configures privacy controls.
 type PrivacyConfig struct {
 	RedactPatterns []string `yaml:"redact_patterns"`
@@ -167,6 +173,9 @@ func Default() *Config {
 		Storage: StorageConfig{
 			Path: filepath.Join(homeDir, ".local", "share", "mindcli"),
 		},
+		Capture: CaptureConfig{
+			Inbox: filepath.Join(homeDir, "Documents", "MindCLI Inbox"),
+		},
 		Privacy: PrivacyConfig{
 			RedactPatterns: []string{},
 		},
@@ -183,6 +192,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Indexing.Workers < 1 {
 		return errors.New("indexing.workers must be at least 1")
+	}
+	if strings.TrimSpace(c.Capture.Inbox) == "" {
+		return errors.New("capture.inbox must not be empty")
 	}
 	if c.Sources.Browser.MaxResponseBytes < 1 {
 		return errors.New("sources.browser.max_response_bytes must be at least 1")
@@ -238,6 +250,7 @@ func Load() (*Config, error) {
 // hand-edited configs (and env overrides) using ~ behave like absolute paths.
 func expandConfigPaths(cfg *Config) {
 	cfg.Storage.Path = expandUserPath(cfg.Storage.Path)
+	cfg.Capture.Inbox = expandUserPath(cfg.Capture.Inbox)
 	cfg.Sources.Markdown.Paths = expandUserPaths(cfg.Sources.Markdown.Paths)
 	cfg.Sources.PDF.Paths = expandUserPaths(cfg.Sources.PDF.Paths)
 	cfg.Sources.Email.Paths = expandUserPaths(cfg.Sources.Email.Paths)
@@ -335,6 +348,7 @@ func (c *Config) DatabasePath() (string, error) {
 func applyEnvOverrides(cfg *Config) {
 	// Storage
 	setStringFromEnv("MINDCLI_STORAGE_PATH", &cfg.Storage.Path)
+	setStringFromEnv("MINDCLI_CAPTURE_INBOX", &cfg.Capture.Inbox)
 
 	// Indexing
 	setIntFromEnv("MINDCLI_INDEXING_WORKERS", &cfg.Indexing.Workers)
