@@ -55,9 +55,16 @@ type EmailSourceConfig struct {
 
 // BrowserSourceConfig configures browser history indexing.
 type BrowserSourceConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Browsers       []string `yaml:"browsers"`
-	IncludeContent bool     `yaml:"include_content"`
+	Enabled               bool     `yaml:"enabled"`
+	Browsers              []string `yaml:"browsers"`
+	IncludeContent        bool     `yaml:"include_content"`
+	AllowedDomains        []string `yaml:"allowed_domains"`
+	DeniedDomains         []string `yaml:"denied_domains"`
+	MaxResponseBytes      int64    `yaml:"max_response_bytes"`
+	RequestTimeoutSeconds int      `yaml:"request_timeout_seconds"`
+	FetchConcurrency      int      `yaml:"fetch_concurrency"`
+	MaxPages              int      `yaml:"max_pages"`
+	RetentionDays         int      `yaml:"retention_days"`
 }
 
 // ClipboardSourceConfig configures clipboard history.
@@ -126,9 +133,16 @@ func Default() *Config {
 				MaskSensitivePreview: true,
 			},
 			Browser: BrowserSourceConfig{
-				Enabled:        true,
-				Browsers:       []string{"chrome", "firefox", "safari"},
-				IncludeContent: false,
+				Enabled:               true,
+				Browsers:              []string{"chrome", "firefox", "safari"},
+				IncludeContent:        false,
+				AllowedDomains:        []string{},
+				DeniedDomains:         []string{},
+				MaxResponseBytes:      2 << 20,
+				RequestTimeoutSeconds: 10,
+				FetchConcurrency:      4,
+				MaxPages:              5000,
+				RetentionDays:         365,
 			},
 			Clipboard: ClipboardSourceConfig{
 				Enabled:       true,
@@ -169,6 +183,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Indexing.Workers < 1 {
 		return errors.New("indexing.workers must be at least 1")
+	}
+	if c.Sources.Browser.MaxResponseBytes < 1 {
+		return errors.New("sources.browser.max_response_bytes must be at least 1")
+	}
+	if c.Sources.Browser.RequestTimeoutSeconds < 1 {
+		return errors.New("sources.browser.request_timeout_seconds must be at least 1")
+	}
+	if c.Sources.Browser.FetchConcurrency < 1 {
+		return errors.New("sources.browser.fetch_concurrency must be at least 1")
+	}
+	if c.Sources.Browser.MaxPages < 1 {
+		return errors.New("sources.browser.max_pages must be at least 1")
+	}
+	if c.Sources.Browser.RetentionDays < 1 {
+		return errors.New("sources.browser.retention_days must be at least 1")
 	}
 	if c.Embeddings.Provider != "ollama" && c.Embeddings.Provider != "openai" {
 		return errors.New("embeddings.provider must be 'ollama' or 'openai'")
@@ -343,6 +372,13 @@ func applyEnvOverrides(cfg *Config) {
 	setBoolFromEnv("MINDCLI_SOURCES_BROWSER_ENABLED", &cfg.Sources.Browser.Enabled)
 	setCSVFromEnv("MINDCLI_SOURCES_BROWSER_BROWSERS", &cfg.Sources.Browser.Browsers)
 	setBoolFromEnv("MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT", &cfg.Sources.Browser.IncludeContent)
+	setCSVFromEnv("MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS", &cfg.Sources.Browser.AllowedDomains)
+	setCSVFromEnv("MINDCLI_SOURCES_BROWSER_DENIED_DOMAINS", &cfg.Sources.Browser.DeniedDomains)
+	setInt64FromEnv("MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES", &cfg.Sources.Browser.MaxResponseBytes)
+	setIntFromEnv("MINDCLI_SOURCES_BROWSER_REQUEST_TIMEOUT_SECONDS", &cfg.Sources.Browser.RequestTimeoutSeconds)
+	setIntFromEnv("MINDCLI_SOURCES_BROWSER_FETCH_CONCURRENCY", &cfg.Sources.Browser.FetchConcurrency)
+	setIntFromEnv("MINDCLI_SOURCES_BROWSER_MAX_PAGES", &cfg.Sources.Browser.MaxPages)
+	setIntFromEnv("MINDCLI_SOURCES_BROWSER_RETENTION_DAYS", &cfg.Sources.Browser.RetentionDays)
 
 	// Sources: clipboard
 	setBoolFromEnv("MINDCLI_SOURCES_CLIPBOARD_ENABLED", &cfg.Sources.Clipboard.Enabled)
@@ -377,6 +413,17 @@ func setIntFromEnv(name string, dst *int) {
 		return
 	}
 	parsed, err := strconv.Atoi(strings.TrimSpace(val))
+	if err == nil {
+		*dst = parsed
+	}
+}
+
+func setInt64FromEnv(name string, dst *int64) {
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 	if err == nil {
 		*dst = parsed
 	}

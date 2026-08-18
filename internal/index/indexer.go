@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/J-1000/mindcli/internal/config"
 	"github.com/J-1000/mindcli/internal/embeddings"
@@ -83,9 +84,18 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 
 	// Add browser history source if enabled
 	if cfg.Sources.Browser.Enabled {
-		srcs = append(srcs, sources.NewBrowserSource(
-			cfg.Sources.Browser.Browsers,
-		))
+		browserSource := sources.NewBrowserSource(cfg.Sources.Browser.Browsers)
+		browserSource.SetOptions(sources.BrowserOptions{
+			IncludeContent:   cfg.Sources.Browser.IncludeContent,
+			AllowedDomains:   cfg.Sources.Browser.AllowedDomains,
+			DeniedDomains:    cfg.Sources.Browser.DeniedDomains,
+			MaxResponseBytes: cfg.Sources.Browser.MaxResponseBytes,
+			RequestTimeout:   time.Duration(cfg.Sources.Browser.RequestTimeoutSeconds) * time.Second,
+			FetchConcurrency: cfg.Sources.Browser.FetchConcurrency,
+			MaxPages:         cfg.Sources.Browser.MaxPages,
+			RetentionDays:    cfg.Sources.Browser.RetentionDays,
+		})
+		srcs = append(srcs, browserSource)
 	}
 
 	// Add clipboard source if enabled
