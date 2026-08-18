@@ -24,6 +24,7 @@ func TestDefaultKeyMap(t *testing.T) {
 		{"Open", km.Open},
 		{"Copy", km.Copy},
 		{"Refresh", km.Refresh},
+		{"Related", km.Related},
 		{"Help", km.Help},
 		{"Quit", km.Quit},
 		{"Escape", km.Escape},

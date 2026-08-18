@@ -158,6 +158,52 @@ func TestModelUpdateSearchResults(t *testing.T) {
 	}
 }
 
+func TestModelUpdateRelatedResultsShowsReasons(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	doc := &storage.Document{ID: "related", Title: "Related", Source: storage.SourceMarkdown, Path: "/related.md"}
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.width = 120
+	model.height = 40
+	model.updateViewportSize()
+	updated, _ := model.Update(relatedResultsMsg{
+		sourceTitle: "Source",
+		results: []query.RelatedResult{{
+			Document: doc,
+			Score:    0.5,
+			Reasons:  []query.RelationReason{{Kind: query.RelationTags, Score: 1, Values: []string{"project"}}},
+		}},
+	})
+	m := updated.(Model)
+	if len(m.results) != 1 || m.results[0].ID != doc.ID {
+		t.Fatalf("related results = %+v", m.results)
+	}
+	if !strings.Contains(m.statusMsg, "1 documents related to Source") {
+		t.Errorf("statusMsg = %q", m.statusMsg)
+	}
+	if !strings.Contains(m.preview.View(), "Related: shared tags: project") {
+		t.Errorf("preview missing relation reason: %q", m.preview.View())
+	}
+}
+
+func TestRelatedKeyReportsUnavailableSearcher(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.panel = PanelResults
+	model.results = []*storage.Document{{ID: "selected", Title: "Selected"}}
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	m := updated.(Model)
+	if cmd != nil {
+		t.Fatal("related key returned a command without a related searcher")
+	}
+	if !m.statusIsErr || m.statusMsg != "Related search is unavailable" {
+		t.Fatalf("status = %q (error=%v)", m.statusMsg, m.statusIsErr)
+	}
+}
+
 func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

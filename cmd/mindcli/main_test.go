@@ -71,6 +71,7 @@ func TestPrintUsage(t *testing.T) {
 		"mindcli index",
 		"mindcli watch",
 		"mindcli search",
+		"mindcli related",
 		"mindcli export",
 		"mindcli tag",
 		"mindcli clipboard",
@@ -83,6 +84,105 @@ func TestPrintUsage(t *testing.T) {
 	for _, s := range expectedSubstrings {
 		if !contains(output, s) {
 			t.Errorf("printUsage() output missing %q", s)
+		}
+	}
+}
+
+func TestResolveRelatedDocumentByIDAndPath(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestDB(t, db)
+
+	path := filepath.Join(t.TempDir(), "notes.md")
+	doc := &storage.Document{
+		ID: "stable-id", Source: storage.SourceMarkdown, Path: path, Title: "Notes",
+		ContentHash: "hash", IndexedAt: time.Now(), ModifiedAt: time.Now(),
+	}
+	if err := db.InsertDocument(context.Background(), doc); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name  string
+		id    string
+		paths []string
+	}{
+		{name: "id", id: doc.ID},
+		{name: "path", paths: []string{doc.Path}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveRelatedDocument(context.Background(), db, test.id, test.paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ID != doc.ID {
+				t.Fatalf("resolved ID = %q, want %q", got.ID, doc.ID)
+			}
+		})
+	}
+}
+
+func TestRunRelatedPrintsEvidence(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Join(tmpDir, "config"))
+	t.Setenv("MINDCLI_STORAGE_PATH", dataDir)
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := storage.Open(filepath.Join(dataDir, "mindcli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchIndex, err := search.NewBleveIndex(filepath.Join(dataDir, "search.bleve"))
+	if err != nil {
+		closeTestDB(t, db)
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	docs := []*storage.Document{
+		{ID: "source", Source: storage.SourceMarkdown, Path: "/source.md", Title: "Source", Content: "alpha", Metadata: map[string]string{"tags": "project"}, ContentHash: "s", IndexedAt: now, ModifiedAt: now},
+		{ID: "candidate", Source: storage.SourceMarkdown, Path: "/candidate.md", Title: "Candidate", Content: "beta", Preview: "private preview", Metadata: map[string]string{"tags": "project"}, ContentHash: "c", IndexedAt: now, ModifiedAt: now},
+	}
+	for _, doc := range docs {
+		if err := db.InsertDocument(context.Background(), doc); err != nil {
+			t.Fatal(err)
+		}
+		if err := searchIndex.Index(context.Background(), doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeTestIndex(t, searchIndex)
+	closeTestDB(t, db)
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+	runErr := runRelated([]string{"--id", "source", "--limit", "5"})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	output, readErr := io.ReadAll(r)
+	if closeErr := r.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{"Documents related to Source", "Candidate", "ID: candidate", "Why: shared tags: project", "private preview"} {
+		if !contains(string(output), want) {
+			t.Errorf("related output missing %q:\n%s", want, output)
 		}
 	}
 }
