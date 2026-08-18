@@ -88,6 +88,41 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid browser response limit",
+			modify: func(c *Config) {
+				c.Sources.Browser.MaxResponseBytes = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid browser timeout",
+			modify: func(c *Config) {
+				c.Sources.Browser.RequestTimeoutSeconds = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid browser concurrency",
+			modify: func(c *Config) {
+				c.Sources.Browser.FetchConcurrency = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid browser page limit",
+			modify: func(c *Config) {
+				c.Sources.Browser.MaxPages = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid browser retention",
+			modify: func(c *Config) {
+				c.Sources.Browser.RetentionDays = 0
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid embeddings provider",
 			modify: func(c *Config) {
 				c.Embeddings.Provider = "invalid"
@@ -310,6 +345,19 @@ func TestEmailSourceDefaults(t *testing.T) {
 	}
 }
 
+func TestBrowserSourceDefaults(t *testing.T) {
+	browser := Default().Sources.Browser
+	if browser.IncludeContent {
+		t.Error("browser page fetching must be disabled by default")
+	}
+	if browser.MaxResponseBytes != 2<<20 || browser.RequestTimeoutSeconds != 10 {
+		t.Errorf("browser response bounds = %d bytes/%d seconds", browser.MaxResponseBytes, browser.RequestTimeoutSeconds)
+	}
+	if browser.FetchConcurrency != 4 || browser.MaxPages != 5000 || browser.RetentionDays != 365 {
+		t.Errorf("browser work/retention bounds = %+v", browser)
+	}
+}
+
 func TestPrivacyDefaults(t *testing.T) {
 	cfg := Default()
 	if len(cfg.Privacy.RedactPatterns) != 0 {
@@ -396,6 +444,14 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	t.Setenv("MINDCLI_SOURCES_MARKDOWN_PATHS", "/tmp/notes,/tmp/wiki")
 	t.Setenv("MINDCLI_SOURCES_EMAIL_IGNORE", "private,secret")
 	t.Setenv("MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW", "false")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT", "true")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS", "example.com,docs.example.org")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_DENIED_DOMAINS", "private.example.com")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES", "123456")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_REQUEST_TIMEOUT_SECONDS", "7")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_FETCH_CONCURRENCY", "2")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_MAX_PAGES", "900")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_RETENTION_DAYS", "45")
 	t.Setenv("MINDCLI_PRIVACY_REDACT_PATTERNS", "token-[0-9]+,secret-[a-z]+")
 
 	cfg, err := Load()
@@ -427,6 +483,17 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	}
 	if cfg.Sources.Email.MaskSensitivePreview {
 		t.Errorf("Sources.Email.MaskSensitivePreview = true, want false")
+	}
+	browser := cfg.Sources.Browser
+	if !browser.IncludeContent || browser.MaxResponseBytes != 123456 || browser.RequestTimeoutSeconds != 7 ||
+		browser.FetchConcurrency != 2 || browser.MaxPages != 900 || browser.RetentionDays != 45 {
+		t.Errorf("Sources.Browser overrides = %+v", browser)
+	}
+	if got := strings.Join(browser.AllowedDomains, ","); got != "example.com,docs.example.org" {
+		t.Errorf("Sources.Browser.AllowedDomains = %q", got)
+	}
+	if got := strings.Join(browser.DeniedDomains, ","); got != "private.example.com" {
+		t.Errorf("Sources.Browser.DeniedDomains = %q", got)
 	}
 	if got := strings.Join(cfg.Privacy.RedactPatterns, ","); got != "token-[0-9]+,secret-[a-z]+" {
 		t.Errorf("Privacy.RedactPatterns = %q, want %q", got, "token-[0-9]+,secret-[a-z]+")
