@@ -35,9 +35,10 @@ import (
 
 // Build-time variables set via ldflags.
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	version       = "dev"
+	commit        = "none"
+	date          = "unknown"
+	activeProfile = config.DefaultProfileName
 )
 
 func main() {
@@ -48,52 +49,60 @@ func main() {
 }
 
 func run() error {
+	profile, args, err := parseInvocation(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	activeProfile = profile
+
 	// Parse command line
 	indexCmd := flag.NewFlagSet("index", flag.ExitOnError)
 	indexPaths := indexCmd.String("paths", "", "Comma-separated paths to index (overrides config)")
 	indexWatch := indexCmd.Bool("watch", false, "Watch for file changes after indexing")
 	indexForce := indexCmd.Bool("force", false, "Re-index everything, ignoring unchanged-file checks")
 
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	if len(args) > 0 {
+		switch args[0] {
 		case "index":
-			_ = indexCmd.Parse(os.Args[2:])
+			_ = indexCmd.Parse(args[1:])
 			return runIndex(*indexPaths, *indexWatch, *indexForce)
 		case "reindex":
 			fs := flag.NewFlagSet("reindex", flag.ExitOnError)
 			paths := fs.String("paths", "", "Comma-separated paths to index (overrides config)")
-			_ = fs.Parse(os.Args[2:])
+			_ = fs.Parse(args[1:])
 			return runIndex(*paths, false, true)
 		case "watch":
 			return runWatch()
 		case "search":
-			if len(os.Args) < 3 {
+			if len(args) < 2 {
 				return fmt.Errorf("usage: mindcli search \"query\"")
 			}
-			return runSearch(strings.Join(os.Args[2:], " "))
+			return runSearch(strings.Join(args[1:], " "))
 		case "related":
-			return runRelated(os.Args[2:])
+			return runRelated(args[1:])
 		case "mcp":
 			return runMCP()
 		case "add":
-			return runAdd(os.Args[2:])
+			return runAdd(args[1:])
 		case "save":
-			return runSave(os.Args[2:])
+			return runSave(args[1:])
 		case "session":
-			return runSession(os.Args[2:])
+			return runSession(args[1:])
 		case "export":
-			return runExport(os.Args[2:])
+			return runExport(args[1:])
 		case "tag":
-			return runTag(os.Args[2:])
+			return runTag(args[1:])
 		case "clipboard":
-			return runClipboard(os.Args[2:])
+			return runClipboard(args[1:])
 		case "collection":
-			return runCollection(os.Args[2:])
+			return runCollection(args[1:])
+		case "profile":
+			return runProfile(args[1:])
 		case "ask":
-			if len(os.Args) < 3 {
+			if len(args) < 2 {
 				return fmt.Errorf("usage: mindcli ask \"your question\"")
 			}
-			return runAsk(strings.Join(os.Args[2:], " "))
+			return runAsk(strings.Join(args[1:], " "))
 		case "clean":
 			return runClean()
 		case "stats":
@@ -101,7 +110,7 @@ func run() error {
 		case "doctor":
 			return runDoctor()
 		case "config":
-			return runConfig(os.Args[2:])
+			return runConfig(args[1:])
 		case "version", "-v", "--version":
 			fmt.Printf("mindcli %s (commit: %s, built: %s)\n", version, commit, date)
 			return nil
@@ -115,10 +124,40 @@ func run() error {
 	return runTUI()
 }
 
+func parseInvocation(args []string) (string, []string, error) {
+	profile, err := config.ProfileFromEnv()
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid MINDCLI_PROFILE: %w", err)
+	}
+	if len(args) == 0 {
+		return profile, args, nil
+	}
+	switch {
+	case args[0] == "--profile":
+		if len(args) < 2 {
+			return "", nil, errors.New("--profile requires a name")
+		}
+		profile, err = config.ValidateProfileName(args[1])
+		if err != nil {
+			return "", nil, err
+		}
+		return profile, args[2:], nil
+	case strings.HasPrefix(args[0], "--profile="):
+		profile, err = config.ValidateProfileName(strings.TrimPrefix(args[0], "--profile="))
+		if err != nil {
+			return "", nil, err
+		}
+		return profile, args[1:], nil
+	default:
+		return profile, args, nil
+	}
+}
+
 func printUsage() {
 	fmt.Println(`MindCLI - Personal Knowledge Search
 
 Usage:
+  mindcli [--profile NAME] <command>
   mindcli              Start the TUI
   mindcli index        Index configured sources
   mindcli reindex      Re-index everything (ignores unchanged-file checks)
@@ -129,6 +168,7 @@ Usage:
   mindcli add ...      Capture text into the Markdown inbox
   mindcli save URL     Save a URL into the Markdown inbox
   mindcli session ...  Manage persistent research sessions
+  mindcli profile ...  Create or safely list isolated profiles
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
@@ -168,7 +208,7 @@ Examples:
 }
 
 func loadConfig() (*config.Config, error) {
-	cfg, err := config.Load()
+	cfg, err := config.LoadProfile(activeProfile)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
@@ -1580,6 +1620,7 @@ func runDoctor() error {
 		fmt.Printf("x config: %v\n", err)
 		return err
 	}
+	fmt.Printf("ok active profile: %s\n", cfg.ActiveProfile)
 	fmt.Println("ok config valid")
 	fmt.Printf("  provider:  %s\n", cfg.Embeddings.Provider)
 	fmt.Printf("  model:     %s\n", cfg.Embeddings.Model)
@@ -1667,7 +1708,7 @@ func runConfig(args []string) error {
 		return fmt.Errorf("usage: mindcli config [--path] [--force]")
 	}
 
-	configPath, err := config.ConfigPath()
+	configPath, err := config.ConfigPathForProfile(activeProfile)
 	if err != nil {
 		return fmt.Errorf("getting config path: %w", err)
 	}
@@ -1684,8 +1725,11 @@ func runConfig(args []string) error {
 		}
 	}
 
-	cfg := config.Default()
-	if err := cfg.Save(); err != nil {
+	cfg, err := config.DefaultForProfile(activeProfile)
+	if err != nil {
+		return fmt.Errorf("creating profile defaults: %w", err)
+	}
+	if err := cfg.SaveProfile(activeProfile); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 

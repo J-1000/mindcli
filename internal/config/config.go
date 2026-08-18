@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -406,6 +407,37 @@ func ConfigDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(configDir, "mindcli"), nil
+}
+
+// ListProfiles returns safe profile names from configuration filenames without
+// opening any profile config or indexed-content store.
+func ListProfiles() ([]string, error) {
+	profiles := []string{DefaultProfileName}
+	dir, err := ConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "profiles"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return profiles, nil
+		}
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ".yaml")
+		if validated, err := ValidateProfileName(name); err == nil && validated != DefaultProfileName {
+			profiles = append(profiles, validated)
+		}
+	}
+	named := profiles[1:]
+	sort.Slice(named, func(i, j int) bool {
+		return strings.ToLower(named[i]) < strings.ToLower(named[j])
+	})
+	return profiles, nil
 }
 
 // ConfigPath returns the path to the main config file.
