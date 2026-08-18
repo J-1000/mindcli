@@ -34,6 +34,21 @@ type MultiDocumentSource interface {
 	ParseDocuments(ctx context.Context, file FileInfo) ([]*storage.Document, error)
 }
 
+// IngestionScopeMetadata is attached to documents owned by a reconciled
+// multi-document artifact. It lets the indexer remove records that disappear
+// from a later parse without treating their virtual paths as local files.
+const IngestionScopeMetadata = "mindcli_ingestion_scope"
+
+// ReconciledMultiDocumentSource describes a multi-document source whose
+// returned set is authoritative for a scope. The indexer removes documents in
+// that scope when their stable IDs are absent from the latest successful parse.
+type ReconciledMultiDocumentSource interface {
+	MultiDocumentSource
+
+	ReconciliationScope(file FileInfo) string
+	IsDocumentInScope(file FileInfo, doc *storage.Document) bool
+}
+
 // ParseDocuments adapts a Source to the multi-document ingestion contract.
 func ParseDocuments(ctx context.Context, source Source, file FileInfo) ([]*storage.Document, error) {
 	if multi, ok := source.(MultiDocumentSource); ok {

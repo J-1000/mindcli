@@ -194,6 +194,7 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 	var indexed int64
 	var errors int64
 	_, isMultiDocumentSource := src.(sources.MultiDocumentSource)
+	reconciledSource, isReconciledSource := src.(sources.ReconciledMultiDocumentSource)
 
 	// Start workers
 	for i := 0; i < idx.workers; i++ {
@@ -241,6 +242,12 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					continue
 				}
 
+				currentIDs := make(map[string]struct{}, len(docs))
+				reconciliationScope := ""
+				if isReconciledSource {
+					reconciliationScope = reconciledSource.ReconciliationScope(file)
+				}
+
 				for _, doc := range docs {
 					if doc == nil || doc.ID == "" {
 						err := fmt.Errorf("source returned a document without a stable ID")
@@ -250,21 +257,17 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 						atomic.AddInt64(&errors, 1)
 						continue
 					}
+					currentIDs[doc.ID] = struct{}{}
+					if reconciliationScope != "" {
+						if doc.Metadata == nil {
+							doc.Metadata = make(map[string]string)
+						}
+						doc.Metadata[sources.IngestionScopeMetadata] = reconciliationScope
+					}
 
 					docExisting := existing
 					if isMultiDocumentSource {
 						docExisting, _ = idx.db.GetDocument(ctx, doc.ID)
-						if !idx.force && docExisting != nil && !doc.ModifiedAt.After(docExisting.ModifiedAt) {
-							if err := idx.refreshStoredTags(ctx, docExisting); err != nil {
-								if idx.progress != nil {
-									idx.progress.OnError(string(src.Name()), doc.Path, err)
-								}
-								atomic.AddInt64(&errors, 1)
-								continue
-							}
-							atomic.AddInt64(&indexed, 1)
-							continue
-						}
 					}
 
 					idx.applyRedaction(doc)
@@ -306,6 +309,15 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 					}
 
 					atomic.AddInt64(&indexed, 1)
+				}
+
+				if reconciliationScope != "" {
+					if err := idx.reconcileDocumentSet(ctx, reconciledSource, file, currentIDs); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), file.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+					}
 				}
 			}
 		}()
@@ -355,9 +367,22 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 		if err != nil {
 			return fmt.Errorf("parsing: %w", err)
 		}
+		currentIDs := make(map[string]struct{}, len(docs))
+		reconciledSource, isReconciledSource := src.(sources.ReconciledMultiDocumentSource)
+		reconciliationScope := ""
+		if isReconciledSource {
+			reconciliationScope = reconciledSource.ReconciliationScope(fileInfo)
+		}
 		for _, doc := range docs {
 			if doc == nil || doc.ID == "" {
 				return fmt.Errorf("parsing: source returned a document without a stable ID")
+			}
+			currentIDs[doc.ID] = struct{}{}
+			if reconciliationScope != "" {
+				if doc.Metadata == nil {
+					doc.Metadata = make(map[string]string)
+				}
+				doc.Metadata[sources.IngestionScopeMetadata] = reconciliationScope
 			}
 			idx.applyRedaction(doc)
 			if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
@@ -376,6 +401,11 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 				if err := idx.embedDocument(ctx, doc); err != nil {
 					return fmt.Errorf("embedding: %w", err)
 				}
+			}
+		}
+		if reconciliationScope != "" {
+			if err := idx.reconcileDocumentSet(ctx, reconciledSource, fileInfo, currentIDs); err != nil {
+				return err
 			}
 		}
 
@@ -458,7 +488,10 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	return idx.removeDocument(ctx, doc)
+}
 
+func (idx *Indexer) removeDocument(ctx context.Context, doc *storage.Document) error {
 	// Remove semantic vectors for this document's chunks.
 	if err := idx.deleteDocumentVectors(ctx, doc.ID); err != nil && idx.progress != nil {
 		idx.progress.OnError(string(doc.Source), doc.Path, fmt.Errorf("removing vectors: %w", err))
@@ -474,6 +507,28 @@ func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
 		return fmt.Errorf("removing from database: %w", err)
 	}
 
+	return nil
+}
+
+func (idx *Indexer) reconcileDocumentSet(
+	ctx context.Context,
+	src sources.ReconciledMultiDocumentSource,
+	file sources.FileInfo,
+	currentIDs map[string]struct{},
+) error {
+	docs, err := idx.db.ListDocuments(ctx, src.Name())
+	if err != nil {
+		return fmt.Errorf("listing documents for reconciliation: %w", err)
+	}
+
+	for _, doc := range docs {
+		if _, current := currentIDs[doc.ID]; current || !src.IsDocumentInScope(file, doc) {
+			continue
+		}
+		if err := idx.removeDocument(ctx, doc); err != nil {
+			return fmt.Errorf("removing stale document %s: %w", doc.ID, err)
+		}
+	}
 	return nil
 }
 

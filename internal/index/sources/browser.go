@@ -129,6 +129,38 @@ func (b *BrowserSource) ParseDocuments(ctx context.Context, file FileInfo) ([]*s
 	return buildBrowserDocuments(file, browser, entries), nil
 }
 
+// ReconciliationScope identifies all virtual documents owned by one browser
+// profile, regardless of whether History or Bookmarks was the scanned path.
+func (b *BrowserSource) ReconciliationScope(file FileInfo) string {
+	browser := identifyBrowser(file.Path)
+	if browser == "" {
+		return ""
+	}
+	return browser + ":" + browserProfile(browser, file.Path)
+}
+
+// IsDocumentInScope reports whether doc belongs to the scanned browser
+// profile. The fallback recognizes aggregate documents created by older
+// MindCLI versions so the first new index pass removes them.
+func (b *BrowserSource) IsDocumentInScope(file FileInfo, doc *storage.Document) bool {
+	if doc == nil || doc.Source != storage.SourceBrowser {
+		return false
+	}
+	scope := b.ReconciliationScope(file)
+	if scope == "" {
+		return false
+	}
+	if doc.Metadata[IngestionScopeMetadata] == scope || doc.Metadata["browser_scope"] == scope {
+		return true
+	}
+	if doc.Metadata["entry_count"] == "" {
+		return false
+	}
+	browser := identifyBrowser(file.Path)
+	return doc.Metadata["browser"] == browser &&
+		browserProfile(browser, doc.Path) == browserProfile(browser, file.Path)
+}
+
 func (b *BrowserSource) readEntries(ctx context.Context, file FileInfo) (string, []historyEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
