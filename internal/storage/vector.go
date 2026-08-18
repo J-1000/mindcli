@@ -45,20 +45,34 @@ func NewVectorStore(path string) (*VectorStore, error) {
 	g.Distance = hnsw.CosineDistance
 
 	v := &VectorStore{graph: g, path: path}
-	v.loadMeta()
+	if err := v.loadMeta(); err != nil {
+		return nil, err
+	}
+	graphDim := g.Dims()
+	if v.dim != 0 && graphDim != 0 && v.dim != graphDim {
+		return nil, fmt.Errorf("vector metadata dimension %d does not match graph dimension %d", v.dim, graphDim)
+	}
+	if graphDim != 0 {
+		v.dim = graphDim
+	}
 	return v, nil
 }
 
-func (v *VectorStore) loadMeta() {
+func (v *VectorStore) loadMeta() error {
 	data, err := os.ReadFile(metaPath(v.path))
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading vector metadata: %w", err)
 	}
 	var m vectorMeta
-	if json.Unmarshal(data, &m) == nil {
-		v.model = m.Model
-		v.dim = m.Dim
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("parsing vector metadata: %w", err)
 	}
+	v.model = m.Model
+	v.dim = m.Dim
+	return nil
 }
 
 func (v *VectorStore) saveMeta() error {
@@ -158,7 +172,7 @@ func (v *VectorStore) Search(query []float32, k int) []VectorResult {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	if v.graph.Len() == 0 {
+	if v.graph.Len() == 0 || len(query) == 0 || (v.dim != 0 && len(query) != v.dim) {
 		return nil
 	}
 
@@ -176,6 +190,18 @@ func (v *VectorStore) Search(query []float32, k int) []VectorResult {
 		}
 	}
 	return results
+}
+
+// Reset replaces the in-memory graph and records the model for a full rebuild.
+// The new empty graph is persisted by the next Save or Close call.
+func (v *VectorStore) Reset(model string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	g := hnsw.NewGraph[string]()
+	g.Distance = hnsw.CosineDistance
+	v.graph.Graph = g
+	v.model = model
+	v.dim = 0
 }
 
 // Delete removes a vector by key.
