@@ -141,6 +141,25 @@ themselves are stored as entered/generated. Brief files created with `--output`
 use mode `0600`. If the configured LLM is remote, new questions, bounded source
 context, and bounded recent session history are sent to that provider.
 
+## Profile boundary
+
+`--profile NAME` and `MINDCLI_PROFILE=NAME` select one profile before any store
+is opened. MindCLI never implicitly searches across profiles. Each named
+profile has its own configuration and defaults to a separate data directory and
+capture inbox. That separates SQLite content (including tags, collections, and
+sessions), the Bleve index, vector graph, embedding cache, source/provider
+settings, redaction rules, and portable captures. The active profile is visible
+in the TUI and diagnostics. `mindcli profile list` inspects validated config
+filenames only and does not open databases or reveal indexed content.
+
+Profiles are an organizational boundary within one operating-system account,
+not encryption or multi-user access control. Their default note/PDF source paths
+overlap until you edit each profile config, so configure work and personal
+sources deliberately. Exact environment overrides such as
+`MINDCLI_CONFIG_PATH`, `MINDCLI_STORAGE_PATH`, and `MINDCLI_CAPTURE_INBOX` can
+also point multiple profiles at the same location; doing so explicitly weakens
+the isolation described above.
+
 ## What MindCLI does not (yet) do
 
 - **No at-rest encryption.** The database and indexes are not encrypted. If your
@@ -156,4 +175,7 @@ context, and bounded recent session history are sent to that provider.
 - `mindcli clean` — remove documents whose source files no longer exist.
 - `mindcli session delete NAME` — remove a session, its conversation, and its
   context rules.
-- Delete the data directory to wipe everything.
+- Delete one profile's data directory to wipe its indexes without touching
+  another profile. Delete its capture inbox separately to remove portable
+  capture files. Deleting the root data directory wipes every default-layout
+  profile's indexes, but not source files or capture inboxes stored elsewhere.

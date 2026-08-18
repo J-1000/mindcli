@@ -77,6 +77,9 @@ mindcli save https://example.com/article      # Save a normalized URL, optionall
 mindcli session create release-research       # Create an explicitly persistent research session
 mindcli session resume release-research       # Resume the session in the TUI
 mindcli session export release-research --format markdown --output brief.md
+mindcli profile create work                  # Create isolated config/data/inbox defaults
+mindcli --profile work search "launch plan"  # Never searches another profile implicitly
+MINDCLI_PROFILE=personal mindcli doctor      # Environment selection is also supported
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -135,13 +138,15 @@ arguments to see command-specific usage.
 
 ## Configuration
 
-MindCLI looks for `~/.config/mindcli/config.yaml`. Run `mindcli config` to
-generate it. Existing configuration is preserved unless you explicitly pass
-`--force`; `mindcli config --path` prints the resolved location without writing.
+The default profile looks for `~/.config/mindcli/config.yaml`; named profiles
+use `~/.config/mindcli/profiles/NAME.yaml`. Run `mindcli config` (optionally
+after `--profile NAME`) to generate the active file. Existing configuration is
+preserved unless you explicitly pass `--force`; `mindcli config --path` prints
+the resolved location without writing.
 
 Environment variables can override config values at runtime:
 
-- Config/storage: `MINDCLI_CONFIG_PATH`, `MINDCLI_CONFIG_DIR`, `MINDCLI_STORAGE_PATH`
+- Profile/config/storage: `MINDCLI_PROFILE`, `MINDCLI_CONFIG_PATH`, `MINDCLI_CONFIG_DIR`, `MINDCLI_STORAGE_PATH`
 - Indexing/search: `MINDCLI_INDEXING_WORKERS`, `MINDCLI_INDEXING_WATCH`, `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
 - Embeddings/LLM: `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
 - Markdown: `MINDCLI_SOURCES_MARKDOWN_ENABLED`, `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_MARKDOWN_EXTENSIONS`, `MINDCLI_SOURCES_MARKDOWN_IGNORE`
@@ -293,6 +298,43 @@ per-turn citations with stable document IDs, and a deduplicated source list.
 Generated answers are labeled as generated content. Brief files created through
 `--output` use mode `0600`.
 
+## Work and personal profiles
+
+Profiles are hard local store boundaries selected before the command:
+
+```bash
+mindcli profile create work
+mindcli profile create personal
+mindcli profile list
+
+mindcli --profile work config
+mindcli --profile work index
+mindcli --profile work
+mindcli --profile work session list
+mindcli --profile work mcp
+
+MINDCLI_PROFILE=personal mindcli search "travel plans"
+```
+
+Profile names are limited to 32 ASCII letters, numbers, hyphens, and
+underscores, must start with a letter or number, and cannot contain path
+separators. A command-line `--profile` takes precedence over `MINDCLI_PROFILE`.
+`profile list` reads safe config filenames only; it never opens a profile's
+database or indexed content.
+
+The historical `default` profile keeps the existing data and inbox paths. A
+named profile defaults to `~/.local/share/mindcli/profiles/NAME` and
+`~/Documents/MindCLI Inbox/NAME`. Its SQLite database, Bleve index, vector graph,
+embedding cache, source paths, providers, redaction rules, tags, collections,
+sessions, and captures are therefore separate. Default source paths still point
+at the same home folders until edited, so set each profile's sources deliberately.
+The active profile is always shown in the TUI header and `mindcli doctor`.
+
+`MINDCLI_CONFIG_PATH`, `MINDCLI_STORAGE_PATH`, and `MINDCLI_CAPTURE_INBOX` are
+explicit exact-path overrides. Reusing one override across profiles can make
+them share configuration, storage, or captured files; avoid that when isolation
+is the goal.
+
 ## MCP server
 
 `mindcli mcp` exposes the local index to MCP-compatible assistants and editors
@@ -304,7 +346,7 @@ the MindCLI binary as a subprocess, for example:
   "mcpServers": {
     "mindcli": {
       "command": "/absolute/path/to/mindcli",
-      "args": ["mcp"]
+      "args": ["--profile", "default", "mcp"]
     }
   }
 }
@@ -334,7 +376,8 @@ and retention policy applies.
 
 To keep the index current automatically, run `mindcli watch` as a service.
 Example unit files are provided in [`init/`](init/) for systemd (Linux) and
-launchd (macOS).
+launchd (macOS); both explicitly select `--profile default`. Duplicate and
+rename a service with another explicit profile to watch more than one.
 
 ## How Search Works
 
