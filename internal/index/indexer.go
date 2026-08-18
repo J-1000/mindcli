@@ -97,6 +97,15 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	if cfg.Sources.EPUB.Enabled {
+		srcs = append(srcs, sources.NewEPUBSource(
+			cfg.Sources.EPUB.Paths,
+			cfg.Sources.EPUB.Ignore,
+			cfg.Sources.EPUB.MaxFileBytes,
+			cfg.Sources.EPUB.MaxDecompressedBytes,
+		))
+	}
+
 	// Add email source if enabled
 	if cfg.Sources.Email.Enabled {
 		emailSrc := sources.NewEmailSource(
