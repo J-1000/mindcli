@@ -3,24 +3,32 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config holds all configuration for MindCLI.
 type Config struct {
-	Sources    SourcesConfig    `yaml:"sources"`
-	Embeddings EmbeddingsConfig `yaml:"embeddings"`
-	Search     SearchConfig     `yaml:"search"`
-	Indexing   IndexingConfig   `yaml:"indexing"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Capture    CaptureConfig    `yaml:"capture"`
-	Privacy    PrivacyConfig    `yaml:"privacy"`
+	ActiveProfile string           `yaml:"-"`
+	Sources       SourcesConfig    `yaml:"sources"`
+	Embeddings    EmbeddingsConfig `yaml:"embeddings"`
+	Search        SearchConfig     `yaml:"search"`
+	Indexing      IndexingConfig   `yaml:"indexing"`
+	Storage       StorageConfig    `yaml:"storage"`
+	Capture       CaptureConfig    `yaml:"capture"`
+	Privacy       PrivacyConfig    `yaml:"privacy"`
 }
+
+const (
+	DefaultProfileName  = "default"
+	MaxProfileNameRunes = 32
+)
 
 // SourcesConfig configures which data sources to index.
 type SourcesConfig struct {
@@ -117,9 +125,27 @@ type PrivacyConfig struct {
 
 // Default returns a Config with sensible defaults.
 func Default() *Config {
+	cfg, _ := DefaultForProfile(DefaultProfileName)
+	return cfg
+}
+
+// DefaultForProfile returns isolated defaults for a validated profile. The
+// historical paths remain unchanged for the default profile.
+func DefaultForProfile(profile string) (*Config, error) {
+	profile, err := ValidateProfileName(profile)
+	if err != nil {
+		return nil, err
+	}
 	homeDir, _ := os.UserHomeDir()
+	storagePath := filepath.Join(homeDir, ".local", "share", "mindcli")
+	captureInbox := filepath.Join(homeDir, "Documents", "MindCLI Inbox")
+	if profile != DefaultProfileName {
+		storagePath = filepath.Join(storagePath, "profiles", profile)
+		captureInbox = filepath.Join(captureInbox, profile)
+	}
 
 	return &Config{
+		ActiveProfile: profile,
 		Sources: SourcesConfig{
 			Markdown: MarkdownSourceConfig{
 				Enabled:    true,
@@ -171,19 +197,58 @@ func Default() *Config {
 			Watch:   true,
 		},
 		Storage: StorageConfig{
-			Path: filepath.Join(homeDir, ".local", "share", "mindcli"),
+			Path: storagePath,
 		},
 		Capture: CaptureConfig{
-			Inbox: filepath.Join(homeDir, "Documents", "MindCLI Inbox"),
+			Inbox: captureInbox,
 		},
 		Privacy: PrivacyConfig{
 			RedactPatterns: []string{},
 		},
+	}, nil
+}
+
+// ValidateProfileName accepts a small portable filename-safe profile name and
+// rejects traversal, separators, Unicode confusables, and empty values.
+func ValidateProfileName(profile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "", errors.New("profile name must not be empty")
 	}
+	if utf8.RuneCountInString(profile) > MaxProfileNameRunes {
+		return "", fmt.Errorf("profile name exceeds %d characters", MaxProfileNameRunes)
+	}
+	for index, r := range profile {
+		isLetter := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		isDigit := r >= '0' && r <= '9'
+		if index == 0 && !isLetter && !isDigit {
+			return "", fmt.Errorf("profile name %q must start with a letter or number", profile)
+		}
+		if !isLetter && !isDigit && r != '-' && r != '_' {
+			return "", fmt.Errorf("profile name %q may contain only letters, numbers, '-' and '_'", profile)
+		}
+	}
+	return profile, nil
+}
+
+// ProfileFromEnv returns the explicitly selected profile or the compatible
+// default profile when MINDCLI_PROFILE is unset.
+func ProfileFromEnv() (string, error) {
+	profile := strings.TrimSpace(os.Getenv("MINDCLI_PROFILE"))
+	if profile == "" {
+		profile = DefaultProfileName
+	}
+	return ValidateProfileName(profile)
 }
 
 // Validate checks if the configuration is valid.
 func (c *Config) Validate() error {
+	if c.ActiveProfile == "" {
+		c.ActiveProfile = DefaultProfileName
+	}
+	if _, err := ValidateProfileName(c.ActiveProfile); err != nil {
+		return err
+	}
 	if c.Search.HybridWeight < 0 || c.Search.HybridWeight > 1 {
 		return errors.New("search.hybrid_weight must be between 0 and 1")
 	}
@@ -223,25 +288,45 @@ func (c *Config) Validate() error {
 // Load loads configuration from the YAML file, falling back to defaults
 // for any missing values.
 func Load() (*Config, error) {
-	cfg := Default()
+	profile, err := ProfileFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return LoadProfile(profile)
+}
+
+// LoadProfile loads an isolated profile config, falling back to that profile's
+// defaults for missing files and fields.
+func LoadProfile(profile string) (*Config, error) {
+	profile, err := ValidateProfileName(profile)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := DefaultForProfile(profile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Layer the config file on top of defaults when one exists. A missing
 	// file is fine (defaults are used); env overrides and path expansion are
 	// always applied so they work even without a config file.
-	if configPath, err := ConfigPath(); err == nil {
-		data, err := os.ReadFile(configPath)
-		switch {
-		case err == nil:
-			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, err
-			}
-		case !os.IsNotExist(err):
+	configPath, err := ConfigPathForProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(configPath)
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
+	case !os.IsNotExist(err):
+		return nil, err
 	}
 
 	applyEnvOverrides(cfg)
 	expandConfigPaths(cfg)
+	cfg.ActiveProfile = profile
 
 	return cfg, nil
 }
@@ -269,14 +354,32 @@ func expandUserPaths(paths []string) []string {
 
 // Save writes the configuration to the YAML file.
 func (c *Config) Save() error {
-	if err := EnsureConfigDir(); err != nil {
-		return err
+	profile := c.ActiveProfile
+	if profile == "" {
+		var err error
+		profile, err = ProfileFromEnv()
+		if err != nil {
+			return err
+		}
 	}
+	return c.SaveProfile(profile)
+}
 
-	configPath, err := ConfigPath()
+// SaveProfile writes configuration to the selected profile's private path.
+func (c *Config) SaveProfile(profile string) error {
+	profile, err := ValidateProfileName(profile)
 	if err != nil {
 		return err
 	}
+	if err := EnsureConfigDirForProfile(profile); err != nil {
+		return err
+	}
+
+	configPath, err := ConfigPathForProfile(profile)
+	if err != nil {
+		return err
+	}
+	c.ActiveProfile = profile
 
 	data, err := yaml.Marshal(c)
 	if err != nil {
@@ -307,6 +410,20 @@ func ConfigDir() (string, error) {
 
 // ConfigPath returns the path to the main config file.
 func ConfigPath() (string, error) {
+	profile, err := ProfileFromEnv()
+	if err != nil {
+		return "", err
+	}
+	return ConfigPathForProfile(profile)
+}
+
+// ConfigPathForProfile resolves the selected profile without reading indexed
+// content. MINDCLI_CONFIG_PATH remains an explicit exact-path override.
+func ConfigPathForProfile(profile string) (string, error) {
+	profile, err := ValidateProfileName(profile)
+	if err != nil {
+		return "", err
+	}
 	if path := os.Getenv("MINDCLI_CONFIG_PATH"); path != "" {
 		return expandUserPath(path), nil
 	}
@@ -315,12 +432,24 @@ func ConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if profile != DefaultProfileName {
+		return filepath.Join(dir, "profiles", profile+".yaml"), nil
+	}
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
 // EnsureConfigDir creates the config directory if it doesn't exist.
 func EnsureConfigDir() error {
-	configPath, err := ConfigPath()
+	profile, err := ProfileFromEnv()
+	if err != nil {
+		return err
+	}
+	return EnsureConfigDirForProfile(profile)
+}
+
+// EnsureConfigDirForProfile creates the selected config's parent directory.
+func EnsureConfigDirForProfile(profile string) error {
+	configPath, err := ConfigPathForProfile(profile)
 	if err != nil {
 		return err
 	}
