@@ -623,28 +623,42 @@ make clean           # Clean build artifacts
 
 ```
 mindcli/
-├── cmd/mindcli/             # CLI entry point
+├── cmd/mindcli/             # CLI commands, exports, digests, profiles, sessions
+├── init/                    # systemd and launchd watcher services
 ├── internal/
+│   ├── capture/             # Atomic Markdown inbox writer
 │   ├── config/              # YAML configuration
 │   ├── embeddings/          # Ollama/OpenAI embedders + content-hash cache
+│   ├── filter/              # Structured query filters
 │   ├── index/               # Indexing pipeline
 │   │   ├── indexer.go       # Worker pool orchestrator
 │   │   ├── watcher.go       # fsnotify file watcher
 │   │   └── sources/         # Source implementations
-│   │       ├── source.go    # Source interface
-│   │       ├── markdown.go  # Markdown/notes parser
-│   │       ├── pdf.go       # PDF text extraction
-│   │       ├── email.go     # Mbox/Maildir/emlx parser
+│   │       ├── archive.go   # Bounded archive helpers
 │   │       ├── browser.go   # Chrome/Firefox/Safari history
-│   │       └── clipboard.go # Clipboard with password detection
+│   │       ├── browser_fetch.go # Optional bounded page fetches
+│   │       ├── clipboard.go # Clipboard with password detection
+│   │       ├── code.go      # Bounded source-code repositories
+│   │       ├── docx.go      # Word documents
+│   │       ├── email.go     # Mbox/Maildir/emlx and attachments
+│   │       ├── epub.go      # EPUB chapters
+│   │       ├── html.go      # HTML, MHTML, and web archives
+│   │       ├── markdown.go  # Markdown/notes parser
+│   │       ├── org.go       # Org-mode sections
+│   │       ├── pdf.go       # PDF text extraction and optional OCR
+│   │       ├── scanner.go   # Shared bounded filesystem scanner
+│   │       └── source.go    # Source interface
+│   ├── mcpserver/           # Read-only MCP server and service layer
+│   ├── privacy/             # Configurable text redaction
 │   ├── query/               # Hybrid search + LLM query parser
 │   ├── search/              # Bleve full-text search
-│   ├── storage/             # SQLite + HNSW vector store
+│   ├── storage/             # SQLite, sessions, collections, HNSW vectors
 │   └── tui/                 # Bubble Tea interface
 │       ├── app.go           # Main model + three-panel layout
 │       ├── keys.go          # Keybindings
 │       └── styles/          # Lip Gloss styling
-└── pkg/chunker/             # Sliding window text chunker
+├── pkg/chunker/             # Text and code-aware chunking
+└── scripts/                 # Install and release smoke scripts
 ```
 
 ## License
