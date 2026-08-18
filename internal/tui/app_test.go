@@ -204,6 +204,44 @@ func TestRelatedKeyReportsUnavailableSearcher(t *testing.T) {
 	}
 }
 
+func TestQuickCaptureFlow(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.SetCapture(func(ctx context.Context, content string) (string, error) {
+		if content != "new thought" {
+			t.Errorf("capture content = %q", content)
+		}
+		now := time.Now().UTC()
+		doc := &storage.Document{
+			ID: "captured", Source: storage.SourceMarkdown, Path: "/inbox/captured.md",
+			Title: "New thought", Content: content, ContentHash: "hash",
+			IndexedAt: now, ModifiedAt: now,
+		}
+		return doc.Path, db.InsertDocument(ctx, doc)
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m := updated.(Model)
+	if !m.capturing {
+		t.Fatal("Ctrl+n did not enter capture mode")
+	}
+	m.captureInput.SetValue("new thought")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.capturing || cmd == nil {
+		t.Fatalf("submitting capture: capturing=%v cmd=%v", m.capturing, cmd)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.statusIsErr || m.statusMsg != "Captured: /inbox/captured.md" {
+		t.Fatalf("capture status = %q (error=%v)", m.statusMsg, m.statusIsErr)
+	}
+	if len(m.results) == 0 || m.results[0].ID != "captured" {
+		t.Fatalf("capture results = %+v", m.results)
+	}
+}
+
 func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

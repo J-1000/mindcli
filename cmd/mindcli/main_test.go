@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +75,9 @@ func TestPrintUsage(t *testing.T) {
 		"mindcli watch",
 		"mindcli search",
 		"mindcli related",
+		"mindcli mcp",
+		"mindcli add",
+		"mindcli save",
 		"mindcli export",
 		"mindcli tag",
 		"mindcli clipboard",
@@ -85,6 +91,90 @@ func TestPrintUsage(t *testing.T) {
 		if !contains(output, s) {
 			t.Errorf("printUsage() output missing %q", s)
 		}
+	}
+}
+
+func TestRunSaveFetchesIndexesCollectsAndDeduplicatesURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" {
+			t.Error("save request included browser session state")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<main><h1>Saved Article</h1><p>` + strings.Repeat("useful captured text ", 30) + `</p></main>`))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+	inbox := filepath.Join(tmpDir, "inbox")
+	t.Setenv("MINDCLI_CONFIG_PATH", filepath.Join(tmpDir, "missing.yaml"))
+	t.Setenv("MINDCLI_STORAGE_PATH", dataDir)
+	t.Setenv("MINDCLI_CAPTURE_INBOX", inbox)
+	t.Setenv("MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT", "true")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS", "127.0.0.1")
+	t.Setenv("MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES", "4096")
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+	firstErr := runSave([]string{"--tag", "reading", "--collection", "research", server.URL + "/page?utm_source=test"})
+	secondErr := runSave([]string{server.URL + "/page#fragment"})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	output, readErr := io.ReadAll(r)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if firstErr != nil || secondErr != nil || readErr != nil {
+		t.Fatalf("runSave errors = %v, %v, read=%v", firstErr, secondErr, readErr)
+	}
+	if !strings.Contains(string(output), "URL already saved") {
+		t.Fatalf("save output did not report duplicate:\n%s", output)
+	}
+
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("inbox contains %d files, want 1", len(entries))
+	}
+	path := filepath.Join(inbox, entries[0].Name())
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Saved Article", "useful captured text", `tags: ["reading"]`, `source_url: "` + server.URL + `/page"`} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("saved Markdown missing %q:\n%s", want, content)
+		}
+	}
+
+	db, err := storage.Open(filepath.Join(dataDir, "mindcli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestDB(t, db)
+	doc, err := db.GetDocumentByPath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.TagsString() != "reading" || doc.Metadata["source_url"] != server.URL+"/page" {
+		t.Fatalf("indexed saved page = %+v", doc)
+	}
+	collection, err := db.GetCollectionByName(context.Background(), "research")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := db.GetCollectionDocuments(context.Background(), collection.ID)
+	if err != nil || len(docs) != 1 || docs[0].ID != doc.ID {
+		t.Fatalf("collection documents = %+v, err=%v", docs, err)
 	}
 }
 

@@ -75,6 +75,35 @@ func TestBrowserContentFetchEnrichesDocumentWithoutSessionHeaders(t *testing.T) 
 	}
 }
 
+func TestFetchReaderPageAndNormalizeWebURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" {
+			t.Error("reader request included authenticated session state")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<main><h1>Saved page</h1><p>` + strings.Repeat("reader text ", 20) + `</p></main>`))
+	}))
+	defer server.Close()
+
+	normalized := NormalizeWebURL(server.URL + "/article?utm_source=test#section")
+	if normalized != server.URL+"/article" {
+		t.Fatalf("NormalizeWebURL() = %q", normalized)
+	}
+	page, err := FetchReaderPage(context.Background(), normalized, BrowserOptions{
+		AllowedDomains: []string{"127.0.0.1"}, MaxResponseBytes: 4096,
+		RequestTimeout: time.Second, FetchConcurrency: 1, MaxPages: 1, RetentionDays: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page.Content, "Saved page") || page.ContentType != "text/html" || page.FinalURL != normalized {
+		t.Fatalf("reader page = %+v", page)
+	}
+	if got := NormalizeWebURL("file:///tmp/page"); got != "" {
+		t.Fatalf("NormalizeWebURL(file) = %q, want empty", got)
+	}
+}
+
 func TestBrowserContentFetchClassifiesRecoverableFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

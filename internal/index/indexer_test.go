@@ -45,6 +45,46 @@ func closeIndexerTestVectors(t *testing.T, vectors *storage.VectorStore) {
 	}
 }
 
+func TestIndexerIndexesCaptureInboxWhenMarkdownSourceDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	inbox := filepath.Join(tmpDir, "inbox")
+	mustIndexerTestSucceed(t, os.MkdirAll(inbox, 0o700))
+	path := filepath.Join(inbox, "capture.md")
+	mustIndexerTestSucceed(t, os.WriteFile(path, []byte("---\ntitle: Capture\ntags: [inbox]\n---\nCaptured thought\n"), 0o600))
+
+	db, err := storage.Open(filepath.Join(tmpDir, "mindcli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestDB(t, db)
+	searchIndex, err := search.NewBleveIndex(filepath.Join(tmpDir, "search.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestSearch(t, searchIndex)
+
+	cfg := config.Default()
+	cfg.Sources.Markdown.Enabled = false
+	cfg.Sources.Markdown.Paths = nil
+	cfg.Sources.Markdown.Extensions = []string{".txt"}
+	cfg.Sources.PDF.Enabled = false
+	cfg.Sources.Email.Enabled = false
+	cfg.Sources.Browser.Enabled = false
+	cfg.Sources.Clipboard.Enabled = false
+	cfg.Capture.Inbox = inbox
+	indexer := NewIndexer(db, searchIndex, nil, nil, cfg)
+	if err := indexer.IndexFile(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := db.GetDocumentByPath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Capture" || doc.TagsString() != "inbox" {
+		t.Fatalf("indexed capture = %+v", doc)
+	}
+}
+
 func TestIndexer_IndexAll(t *testing.T) {
 	// Create temp directories
 	tmpDir := t.TempDir()

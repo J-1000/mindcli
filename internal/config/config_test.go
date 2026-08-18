@@ -271,6 +271,27 @@ func TestConfigDataDir(t *testing.T) {
 	}
 }
 
+func TestCaptureInboxDefaultsExpandsAndValidates(t *testing.T) {
+	cfg := Default()
+	if cfg.Capture.Inbox == "" || !filepath.IsAbs(cfg.Capture.Inbox) {
+		t.Fatalf("default capture inbox = %q", cfg.Capture.Inbox)
+	}
+
+	t.Setenv("MINDCLI_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("MINDCLI_CAPTURE_INBOX", "~/MindCLI Test Inbox")
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(loaded.Capture.Inbox, "~") || !strings.HasSuffix(loaded.Capture.Inbox, "MindCLI Test Inbox") {
+		t.Fatalf("expanded capture inbox = %q", loaded.Capture.Inbox)
+	}
+	loaded.Capture.Inbox = " "
+	if err := loaded.Validate(); err == nil || !strings.Contains(err.Error(), "capture.inbox") {
+		t.Fatalf("Validate() error = %v, want capture inbox error", err)
+	}
+}
+
 func TestConfigDatabasePath(t *testing.T) {
 	tmpDir := t.TempDir()
 
