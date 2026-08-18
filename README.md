@@ -9,7 +9,7 @@ OpenAI-compatible API.
 
 ## Features
 
-- **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), browser history (Chrome/Firefox/Safari), clipboard
+- **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), individual browser pages (Chrome/Firefox/Safari), clipboard
 - **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
 - **Local AI by default** — Embeddings and streaming LLM answers via Ollama, with optional OpenAI provider
 - **Conversational follow-ups** — Ask a question, then follow up ("tell me more") with prior turns kept in context
@@ -131,7 +131,7 @@ Environment variables can override config values at runtime:
 - Markdown: `MINDCLI_SOURCES_MARKDOWN_ENABLED`, `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_MARKDOWN_EXTENSIONS`, `MINDCLI_SOURCES_MARKDOWN_IGNORE`
 - PDF: `MINDCLI_SOURCES_PDF_ENABLED`, `MINDCLI_SOURCES_PDF_PATHS`
 - Email: `MINDCLI_SOURCES_EMAIL_ENABLED`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_FORMATS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`
-- Browser: `MINDCLI_SOURCES_BROWSER_ENABLED`, `MINDCLI_SOURCES_BROWSER_BROWSERS`, `MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT`
+- Browser: `MINDCLI_SOURCES_BROWSER_ENABLED`, `MINDCLI_SOURCES_BROWSER_BROWSERS`, `MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT`, `MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_DENIED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES`, `MINDCLI_SOURCES_BROWSER_REQUEST_TIMEOUT_SECONDS`, `MINDCLI_SOURCES_BROWSER_FETCH_CONCURRENCY`, `MINDCLI_SOURCES_BROWSER_MAX_PAGES`, `MINDCLI_SOURCES_BROWSER_RETENTION_DAYS`
 - Clipboard: `MINDCLI_SOURCES_CLIPBOARD_ENABLED`, `MINDCLI_SOURCES_CLIPBOARD_RETENTION_DAYS`, `MINDCLI_SOURCES_CLIPBOARD_SKIP_PASSWORDS`
 - Privacy: `MINDCLI_PRIVACY_REDACT_PATTERNS`, `MINDCLI_PRIVACY_REDACT_CONTENT`
 
@@ -159,7 +159,17 @@ sources:
   browser:
     enabled: true
     browsers: ["chrome", "firefox", "safari"]
-    include_content: false # reserved; browser indexing currently stores titles/URLs/bookmarks
+    # false indexes browser titles, URLs, visits, and bookmarks without making
+    # page-content network requests. true fetches public textual pages with a
+    # cookie-free client and the bounds below.
+    include_content: false
+    allowed_domains: [] # empty allows every domain not explicitly denied
+    denied_domains: []  # deny rules take precedence; subdomains also match
+    max_response_bytes: 2097152
+    request_timeout_seconds: 10
+    fetch_concurrency: 4
+    max_pages: 5000
+    retention_days: 365
 
   clipboard:
     enabled: true
@@ -231,6 +241,22 @@ show the top search results instead. If embeddings are unavailable, search
 gracefully falls back to BM25-only mode.
 
 Follow-up questions in the TUI keep recent Q&A turns in context, so asking "tell me more" or "what about the second one?" works as a conversation. The history resets when you clear the search.
+
+### Browser indexing
+
+Each browser history URL or bookmark is stored as an individual document. URLs
+are normalized to remove fragments, default ports, and common tracking
+parameters; repeated visits to the same normalized URL within a browser profile
+are combined while retaining visit count, last-visit time, and bookmark/history
+metadata. Search results and citations keep the original URL as their openable
+source.
+
+Page-content fetching is opt-in through `sources.browser.include_content`.
+MindCLI sends ordinary unauthenticated GET requests without browser cookies,
+credentials, or session state. Domain allow/deny rules also apply after
+redirects, responses are limited to HTML/XHTML/plain text, and byte, timeout,
+worker, page-count, and age limits are enforced. A failed or offline page is
+recorded as unavailable while its browser title and URL continue to index.
 
 ## Performance
 

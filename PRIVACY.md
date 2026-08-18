@@ -10,7 +10,8 @@ decision.
   `~/.local/share/mindcli`): the SQLite database, the Bleve full-text index, the
   HNSW vector graph, and the embedding cache.
 - **No telemetry.** MindCLI makes no network calls except to the embedding/LLM
-  backend you configure.
+  backend you configure and, when explicitly enabled, public pages from your
+  browser history or bookmarks.
 - **Embedding/LLM backend.** With the default `ollama` provider, embeddings and
   answers are generated locally. If you switch to the `openai` provider, the
   text of your documents (chunks) and your questions are sent to OpenAI's API.
@@ -27,8 +28,8 @@ By default, indexed content is stored **in cleartext**:
 | HNSW | `vectors.graph` | chunk embeddings (+ `vectors.graph.meta.json` model/dim) |
 | Cache | `embeddings.db` | content-hash → embedding vectors |
 
-So a note, PDF, email, browser title, or clipboard entry that you index is
-searchable in cleartext on disk.
+So a note, PDF, email, browser title, fetched browser page, or clipboard entry
+that you index is searchable in cleartext on disk.
 
 ## Redaction
 
@@ -59,7 +60,25 @@ privacy:
 - **Clipboard:** with `sources.clipboard.skip_passwords: true`, entries that look
   like passwords are not indexed; `retention_days` bounds how long clipboard
   history is kept (`mindcli clipboard cleanup`).
-- **Browser:** only titles/URLs are indexed unless `include_content` is enabled.
+- **Browser:** each normalized URL is stored as its own document with browser,
+  profile, visit count, last-visit time, and bookmark/history metadata. Repeated
+  visits within a profile are deduplicated. By default, only this local browser
+  data is read and no page-content requests are made. Browser records are
+  limited by `max_pages` and `retention_days` on each index pass.
+
+  Setting `sources.browser.include_content: true` opts in to network requests
+  for the indexed URLs. These requests use a new cookie-free HTTP client: no
+  browser cookies, authorization headers, client certificates, or authenticated
+  browser session state are copied. The standard system proxy environment may
+  still apply. Only HTML, XHTML, and plain-text responses are accepted.
+
+  `allowed_domains` restricts requests to exact domains and their subdomains;
+  an empty list allows all domains. `denied_domains` always takes precedence,
+  including for redirects. `max_response_bytes`, `request_timeout_seconds`, and
+  `fetch_concurrency` bound each fetch and the total concurrent work. Redirects
+  are limited and rechecked against the same domain policy. Failed, blocked,
+  oversized, unsupported, and offline pages do not fail history indexing: the
+  title and URL remain searchable with a content-status marker.
 
 ## What MindCLI does not (yet) do
 
