@@ -1,6 +1,7 @@
 package sources
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -301,7 +302,14 @@ func (p *PDFSource) extractPDFOCR(ctx context.Context, path string, pageCount in
 var execLookPath = exec.LookPath
 
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	command := exec.CommandContext(ctx, name, args...)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	stdout, err := command.Output()
+	if err != nil && stderr.Len() > 0 {
+		return stderr.Bytes(), err
+	}
+	return stdout, err
 }
 
 func formatPDFPages(pages []string) string {
