@@ -1256,11 +1256,22 @@ func runCollection(args []string) error {
 		} else {
 			for _, c := range cols {
 				count, _ := db.CountCollectionDocuments(ctx, c.ID)
+				activity := "never viewed"
+				if c.LastViewedAt != nil {
+					activity = "viewed " + c.LastViewedAt.Local().Format("2006-01-02 15:04")
+				}
+				if strings.TrimSpace(c.Query) == "" {
+					if unseen, unseenErr := collectionUnseenCount(ctx, db, c, nil); unseenErr == nil {
+						activity = fmt.Sprintf("%d new, %s", unseen, activity)
+					}
+				} else {
+					activity = "smart activity on view, " + activity
+				}
 				desc := ""
 				if c.Description != "" {
 					desc = " - " + c.Description
 				}
-				fmt.Printf("  %s (%d docs)%s\n", c.Name, count, desc)
+				fmt.Printf("  %s (%d manual docs; %s)%s\n", c.Name, count, activity, desc)
 			}
 		}
 
@@ -1272,7 +1283,15 @@ func runCollection(args []string) error {
 		if err != nil {
 			return fmt.Errorf("collection not found: %s", args[1])
 		}
-		count, _ := db.CountCollectionDocuments(ctx, col.ID)
+		documentSet, err := loadCollectionDocumentSet(ctx, s, col)
+		if err != nil {
+			return err
+		}
+		currentIDs := collectionDocumentIDs(documentSet.All)
+		unseen, err := collectionUnseenCount(ctx, db, col, currentIDs)
+		if err != nil {
+			return fmt.Errorf("counting collection activity: %w", err)
+		}
 		fmt.Printf("Collection: %s\n", col.Name)
 		if col.Description != "" {
 			fmt.Printf("Description: %s\n", col.Description)
@@ -1280,30 +1299,27 @@ func runCollection(args []string) error {
 		if col.Query != "" {
 			fmt.Printf("Query: %s\n", col.Query)
 		}
-		fmt.Printf("Documents: %d\n", count)
+		fmt.Printf("Documents: %d\n", len(documentSet.All))
+		fmt.Printf("New since last view: %d\n", unseen)
+		if col.LastViewedAt == nil {
+			fmt.Println("Last viewed: never")
+		} else {
+			fmt.Printf("Last viewed: %s\n", col.LastViewedAt.Local().Format("2006-01-02 15:04:05"))
+		}
 		fmt.Printf("Created: %s\n", col.CreatedAt.Format("2006-01-02 15:04:05"))
 
-		docs, _ := db.GetCollectionDocuments(ctx, col.ID)
-		for i, doc := range docs {
+		for i, doc := range documentSet.Members {
 			fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
 		}
 
-		// Smart collection: also show documents matching the saved query.
-		if strings.TrimSpace(col.Query) != "" {
-			parsed, qErr := query.ParseQueryStrict(col.Query)
-			if qErr != nil {
-				return fmt.Errorf("invalid saved query for collection %q: %w", col.Name, qErr)
+		if strings.TrimSpace(col.Query) != "" && len(documentSet.Matches) > 0 {
+			fmt.Printf("\nMatching saved query %q:\n", col.Query)
+			for i, doc := range documentSet.Matches {
+				fmt.Printf("  %d. %s (%s)\n", i+1, doc.Title, doc.Path)
 			}
-			results, qErr := searchResults(ctx, s, parsed, s.cfg.Search.ResultsLimit)
-			if qErr != nil {
-				return fmt.Errorf("searching collection %q: %w", col.Name, qErr)
-			}
-			if len(results) > 0 {
-				fmt.Printf("\nMatching saved query %q:\n", col.Query)
-				for i, r := range results {
-					fmt.Printf("  %d. %s (%s)\n", i+1, r.Document.Title, r.Document.Path)
-				}
-			}
+		}
+		if err := db.MarkCollectionViewed(ctx, col.ID, currentIDs, time.Now()); err != nil {
+			return fmt.Errorf("recording collection view: %w", err)
 		}
 
 	case "add":
