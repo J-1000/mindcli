@@ -6,14 +6,15 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now mindcli.service
 #
-# Adjust ExecStart if mindcli is not on the default PATH.
+# Adjust ExecStart if mindcli is not on the default PATH. Duplicate the unit
+# with a distinct name and --profile value to watch another isolated profile.
 
 [Unit]
 Description=MindCLI file watcher (incremental re-indexing)
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/mindcli watch
+ExecStart=%h/.local/bin/mindcli --profile default watch
 Restart=on-failure
 RestartSec=5
 

@@ -8,6 +8,8 @@
     launchctl load ~/Library/LaunchAgents/com.github.J-1000.mindcli.plist
 
   Adjust the mindcli path below if it is not installed at /usr/local/bin.
+  Duplicate the agent with a distinct label and --profile value to watch
+  another isolated profile.
 -->
 <plist version="1.0">
 <dict>
@@ -16,6 +18,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/mindcli</string>
+        <string>--profile</string>
+        <string>default</string>
         <string>watch</string>
     </array>
     <key>RunAtLoad</key>
