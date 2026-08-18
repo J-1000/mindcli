@@ -600,12 +600,19 @@ func findFileInfoByPath(ctx context.Context, src sources.Source, path string) (s
 
 // RemoveFile removes a file from the index.
 func (idx *Indexer) RemoveFile(ctx context.Context, path string) error {
-	// Get document by path
-	doc, err := idx.db.GetDocumentByPath(ctx, path)
+	docs, err := idx.db.ListDocumentsByPath(ctx, path)
 	if err != nil {
 		return err
 	}
-	return idx.removeDocument(ctx, doc)
+	if len(docs) == 0 {
+		return storage.ErrNotFound
+	}
+	for _, doc := range docs {
+		if err := idx.removeDocument(ctx, doc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (idx *Indexer) removeDocument(ctx context.Context, doc *storage.Document) error {
@@ -706,9 +713,8 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) er
 	return nil
 }
 
-// Prune removes indexed documents whose backing file no longer exists. Only
-// filesystem-backed sources (markdown, pdf, email) are considered; browser and
-// clipboard entries are not file-backed and are left untouched. Callers should
+// Prune removes indexed documents whose backing file no longer exists.
+// Virtual browser/clipboard entries are left untouched. Callers should
 // SaveVectors afterwards to persist vector removals.
 func (idx *Indexer) Prune(ctx context.Context) (int, error) {
 	docs, err := idx.db.ListDocuments(ctx, "")
@@ -718,13 +724,17 @@ func (idx *Indexer) Prune(ctx context.Context) (int, error) {
 
 	removed := 0
 	for _, doc := range docs {
-		if !isFileBackedSource(doc.Source) {
+		if !storage.IsFileBackedSource(doc.Source) {
 			continue
 		}
-		if _, err := os.Stat(doc.Path); !os.IsNotExist(err) {
+		backingPath := doc.Path
+		if original := strings.TrimSpace(doc.Metadata["original_path"]); original != "" {
+			backingPath = original
+		}
+		if _, err := os.Stat(backingPath); !os.IsNotExist(err) {
 			continue
 		}
-		if err := idx.RemoveFile(ctx, doc.Path); err != nil {
+		if err := idx.removeDocument(ctx, doc); err != nil {
 			if idx.progress != nil {
 				idx.progress.OnError(string(doc.Source), doc.Path, err)
 			}
@@ -733,15 +743,6 @@ func (idx *Indexer) Prune(ctx context.Context) (int, error) {
 		removed++
 	}
 	return removed, nil
-}
-
-func isFileBackedSource(s storage.Source) bool {
-	switch s {
-	case storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail:
-		return true
-	default:
-		return false
-	}
 }
 
 func (idx *Indexer) deleteDocumentVectors(ctx context.Context, docID string) error {

@@ -314,6 +314,33 @@ func (d *DB) GetDocumentByPath(ctx context.Context, path string) (*Document, err
 	return d.scanDocument(row)
 }
 
+// ListDocumentsByPath returns every document owned by a backing path. Some
+// formats, such as EPUB and Org, intentionally produce multiple documents for
+// one openable file.
+func (d *DB) ListDocumentsByPath(ctx context.Context, path string) ([]*Document, error) {
+	query := `
+		SELECT id, source, path, title, content, preview, metadata, content_hash, indexed_at, modified_at
+		FROM documents WHERE path = ? ORDER BY id
+	`
+	rows, err := d.db.QueryContext(ctx, query, path)
+	if err != nil {
+		return nil, fmt.Errorf("querying documents by path: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var docs []*Document
+	for rows.Next() {
+		doc, scanErr := d.scanDocumentRows(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		docs = append(docs, doc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating documents by path: %w", err)
+	}
+	return docs, nil
+}
+
 // DeleteDocument deletes a document by ID.
 func (d *DB) DeleteDocument(ctx context.Context, id string) error {
 	result, err := d.db.ExecContext(ctx, "DELETE FROM documents WHERE id = ?", id)
