@@ -63,6 +63,8 @@ func run() error {
 				return fmt.Errorf("usage: mindcli search \"query\"")
 			}
 			return runSearch(strings.Join(os.Args[2:], " "))
+		case "related":
+			return runRelated(os.Args[2:])
 		case "export":
 			return runExport(os.Args[2:])
 		case "tag":
@@ -106,6 +108,7 @@ Usage:
   mindcli reindex      Re-index everything (ignores unchanged-file checks)
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
+  mindcli related ...  Find documents related to a path or stable ID
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
@@ -130,6 +133,8 @@ Examples:
   mindcli index -watch                         # Index then watch for changes
   mindcli reindex                              # Full rebuild (e.g. after model change)
   mindcli search "Go concurrency"               # Search without TUI
+  mindcli related ~/notes/project.md            # Find related documents
+  mindcli related --id DOCUMENT_ID --limit 10   # Find related documents by stable ID
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
   mindcli ask "what did I write about Go?"     # Ask a question
@@ -574,6 +579,99 @@ func runSearch(queryStr string) error {
 	}
 
 	return nil
+}
+
+func runRelated(args []string) error {
+	fs := flag.NewFlagSet("related", flag.ContinueOnError)
+	documentID := fs.String("id", "", "Stable document ID")
+	limit := fs.Int("limit", 10, "Maximum number of related documents (1-100)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	paths := fs.Args()
+	if *documentID == "" && len(paths) != 1 {
+		return fmt.Errorf("usage: mindcli related [--limit N] <document-path> or mindcli related --id DOCUMENT_ID [--limit N]")
+	}
+	if *documentID != "" && len(paths) != 0 {
+		return fmt.Errorf("related accepts either --id or a document path, not both")
+	}
+	if *limit < 1 || *limit > 100 {
+		return fmt.Errorf("related limit must be between 1 and 100")
+	}
+
+	s, err := openStores(openOpts{vectors: true, embedder: true, hybrid: true})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	doc, err := resolveRelatedDocument(ctx, s.db, *documentID, paths)
+	if err != nil {
+		return err
+	}
+	results, err := s.hybrid.Related(ctx, doc.ID, *limit)
+	if err != nil {
+		return fmt.Errorf("finding documents related to %q: %w", doc.Title, err)
+	}
+	if len(results) == 0 {
+		fmt.Printf("No related documents found for %q.\n", doc.Title)
+		return nil
+	}
+
+	redactor := buildRedactor(s.cfg)
+	fmt.Printf("Documents related to %s:\n\n", doc.Title)
+	for index, result := range results {
+		reasons := make([]string, 0, len(result.Reasons))
+		for _, reason := range result.Reasons {
+			reasons = append(reasons, redactor.Redact(reason.Label()))
+		}
+		preview := result.Document.Preview
+		if preview == "" {
+			preview = result.Document.Content
+		}
+		preview = truncateForDisplay(redactor.Redact(preview), 180)
+		fmt.Printf("%d. %s\n   %s [%s] (score: %.2f)\n   ID: %s\n   Why: %s\n",
+			index+1, result.Document.Title, result.Document.Path, result.Document.Source,
+			result.Score, result.Document.ID, strings.Join(reasons, "; "))
+		if preview != "" {
+			fmt.Printf("   %s\n", preview)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func resolveRelatedDocument(ctx context.Context, db *storage.DB, documentID string, paths []string) (*storage.Document, error) {
+	if documentID != "" {
+		doc, err := db.GetDocument(ctx, documentID)
+		if err != nil {
+			return nil, fmt.Errorf("document ID %q not found", documentID)
+		}
+		return doc, nil
+	}
+
+	path := paths[0]
+	if doc, err := db.GetDocumentByPath(ctx, path); err == nil {
+		return doc, nil
+	}
+	if !strings.Contains(path, "://") {
+		if absolute, err := filepath.Abs(path); err == nil && absolute != path {
+			if doc, err := db.GetDocumentByPath(ctx, absolute); err == nil {
+				return doc, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("document path %q not found in the index", path)
+}
+
+func truncateForDisplay(value string, maxRunes int) string {
+	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func runExport(args []string) error {
