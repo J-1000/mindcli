@@ -125,32 +125,28 @@ func run() error {
 }
 
 func parseInvocation(args []string) (string, []string, error) {
-	profile, err := config.ProfileFromEnv()
-	if err != nil {
-		return "", nil, fmt.Errorf("invalid MINDCLI_PROFILE: %w", err)
-	}
-	if len(args) == 0 {
-		return profile, args, nil
-	}
-	switch {
-	case args[0] == "--profile":
+	if len(args) > 0 && args[0] == "--profile" {
 		if len(args) < 2 {
 			return "", nil, errors.New("--profile requires a name")
 		}
-		profile, err = config.ValidateProfileName(args[1])
+		profile, err := config.ValidateProfileName(args[1])
 		if err != nil {
 			return "", nil, err
 		}
 		return profile, args[2:], nil
-	case strings.HasPrefix(args[0], "--profile="):
-		profile, err = config.ValidateProfileName(strings.TrimPrefix(args[0], "--profile="))
+	}
+	if len(args) > 0 && strings.HasPrefix(args[0], "--profile=") {
+		profile, err := config.ValidateProfileName(strings.TrimPrefix(args[0], "--profile="))
 		if err != nil {
 			return "", nil, err
 		}
 		return profile, args[1:], nil
-	default:
-		return profile, args, nil
 	}
+	profile, err := config.ProfileFromEnv()
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid MINDCLI_PROFILE: %w", err)
+	}
+	return profile, args, nil
 }
 
 func printUsage() {
