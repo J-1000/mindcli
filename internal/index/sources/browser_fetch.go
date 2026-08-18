@@ -48,6 +48,13 @@ type BrowserOptions struct {
 	RetentionDays    int
 }
 
+// ReaderPage is bounded textual content extracted from one public web URL.
+type ReaderPage struct {
+	Content     string
+	FinalURL    string
+	ContentType string
+}
+
 // DefaultBrowserOptions returns privacy-preserving, bounded browser defaults.
 func DefaultBrowserOptions() BrowserOptions {
 	return BrowserOptions{
@@ -58,6 +65,19 @@ func DefaultBrowserOptions() BrowserOptions {
 		MaxPages:         defaultBrowserMaxPages,
 		RetentionDays:    defaultBrowserRetentionDays,
 	}
+}
+
+// FetchReaderPage reuses the browser source's cookie-free HTTP client, domain
+// policy, redirect checks, content-type restrictions, and response bounds for
+// deliberate URL capture.
+func FetchReaderPage(ctx context.Context, rawURL string, options BrowserOptions) (ReaderPage, error) {
+	source := NewBrowserSource(nil)
+	source.SetOptions(options)
+	content, finalURL, contentType, err := source.fetchReaderContent(ctx, rawURL)
+	if err != nil {
+		return ReaderPage{}, err
+	}
+	return ReaderPage{Content: content, FinalURL: finalURL, ContentType: contentType}, nil
 }
 
 // SetOptions configures retention and page fetching for a browser source.

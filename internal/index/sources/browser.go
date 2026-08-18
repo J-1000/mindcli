@@ -779,6 +779,17 @@ func normalizeBrowserURL(raw string) string {
 	return parsed.String()
 }
 
+// NormalizeWebURL returns the stable HTTP(S) identity shared by browser
+// indexing and deliberate URL captures.
+func NormalizeWebURL(raw string) string {
+	normalized := normalizeBrowserURL(raw)
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	return normalized
+}
+
 // buildBrowserDocument creates a Document from browser history entries.
 func buildBrowserDocument(file FileInfo, browser string, entries []historyEntry) *storage.Document {
 	var sb strings.Builder
