@@ -125,11 +125,17 @@ func connectMCPTestClient(t *testing.T, service *Service) *mcp.ClientSession {
 		if err := clientSession.Close(); err != nil {
 			t.Errorf("closing MCP client: %v", err)
 		}
-		if err := serverSession.Wait(); err != nil {
+		if err := serverSession.Wait(); err != nil && !expectedMCPTestShutdown(err) {
 			t.Errorf("waiting for MCP server: %v", err)
 		}
 	})
 	return clientSession
+}
+
+func expectedMCPTestShutdown(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		strings.Contains(err.Error(), "server is closing") ||
+		strings.Contains(err.Error(), "closed pipe")
 }
 
 func callTool[Output any](t *testing.T, session *mcp.ClientSession, name string, arguments any) (Output, *mcp.CallToolResult) {
