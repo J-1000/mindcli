@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/storage"
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/standard"
@@ -23,13 +25,16 @@ type BleveIndex struct {
 
 // bleveDocument is the structure indexed by Bleve.
 type bleveDocument struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Source   string `json:"source"`
-	Path     string `json:"path"`
-	Tags     string `json:"tags"`
-	Headings string `json:"headings"`
+	ID         string   `json:"id"`
+	Title      string   `json:"title"`
+	Content    string   `json:"content"`
+	Source     string   `json:"source"`
+	Path       string   `json:"path"`
+	Tags       []string `json:"tags"`
+	Headings   string   `json:"headings"`
+	Domain     []string `json:"domain"`
+	Kinds      []string `json:"kind"`
+	ModifiedAt int64    `json:"modified_at"`
 }
 
 // NewBleveIndex creates or opens a Bleve index at the given path.
@@ -75,11 +80,14 @@ func buildIndexMapping() mapping.IndexMapping {
 	// Configure field mappings
 	docMapping.AddFieldMappingsAt("title", textFieldMapping)
 	docMapping.AddFieldMappingsAt("content", textFieldMapping)
-	docMapping.AddFieldMappingsAt("tags", textFieldMapping)
 	docMapping.AddFieldMappingsAt("headings", textFieldMapping)
+	docMapping.AddFieldMappingsAt("tags", keywordFieldMapping)
 	docMapping.AddFieldMappingsAt("source", keywordFieldMapping)
 	docMapping.AddFieldMappingsAt("path", keywordFieldMapping)
 	docMapping.AddFieldMappingsAt("id", keywordFieldMapping)
+	docMapping.AddFieldMappingsAt("domain", keywordFieldMapping)
+	docMapping.AddFieldMappingsAt("kind", keywordFieldMapping)
+	docMapping.AddFieldMappingsAt("modified_at", bleve.NewNumericFieldMapping())
 
 	// Create index mapping
 	indexMapping := bleve.NewIndexMapping()
@@ -93,13 +101,16 @@ func buildIndexMapping() mapping.IndexMapping {
 func (b *BleveIndex) Index(ctx context.Context, doc *storage.Document) error {
 	// Convert to bleve document
 	bleveDoc := bleveDocument{
-		ID:       doc.ID,
-		Title:    doc.Title,
-		Content:  doc.Content,
-		Source:   string(doc.Source),
-		Path:     doc.Path,
-		Tags:     doc.TagsString(),
-		Headings: doc.Metadata["headings"],
+		ID:         doc.ID,
+		Title:      doc.Title,
+		Content:    doc.Content,
+		Source:     string(doc.Source),
+		Path:       strings.ToLower(filepath.ToSlash(doc.Path)),
+		Tags:       lowerValues(doc.Tags()),
+		Headings:   doc.Metadata["headings"],
+		Domain:     filter.DocumentDomains(doc),
+		Kinds:      filter.DocumentKinds(doc),
+		ModifiedAt: doc.ModifiedAt.Unix(),
 	}
 
 	if err := b.index.Index(doc.ID, bleveDoc); err != nil {
@@ -160,6 +171,133 @@ func (b *BleveIndex) Search(ctx context.Context, queryStr string, limit int) ([]
 	}
 
 	return results, nil
+}
+
+// SearchFiltered performs full-text search with typed Boolean/range filters.
+func (b *BleveIndex) SearchFiltered(ctx context.Context, text string, filters filter.Set, limit int) ([]SearchResult, error) {
+	q := buildFilteredQuery(text, filters, time.Now())
+	req := bleve.NewSearchRequestOptions(q, limit, 0, false)
+	req.Fields = []string{"*"}
+	req.Highlight = bleve.NewHighlight()
+	req.Highlight.AddField("title")
+	req.Highlight.AddField("content")
+
+	result, err := b.index.SearchInContext(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("searching: %w", err)
+	}
+	results := make([]SearchResult, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		highlights := make(map[string][]string, len(hit.Fragments))
+		for field, fragments := range hit.Fragments {
+			highlights[field] = fragments
+		}
+		results = append(results, SearchResult{ID: hit.ID, Score: hit.Score, Highlights: highlights})
+	}
+	return results, nil
+}
+
+func buildFilteredQuery(text string, filters filter.Set, now time.Time) query.Query {
+	filters = filter.ResolveRelativeTime(filters, now)
+	boolean := bleve.NewBooleanQuery()
+	if strings.TrimSpace(text) == "" {
+		boolean.AddMust(bleve.NewMatchAllQuery())
+	} else {
+		boolean.AddMust(bleve.NewMatchQuery(text))
+	}
+
+	for _, phrase := range filters.ExactPhrases {
+		boolean.AddMust(textFieldDisjunction(phrase, true))
+	}
+	for _, term := range filters.ExcludedTerms {
+		boolean.AddMustNot(textFieldDisjunction(term, strings.ContainsAny(term, " \t")))
+	}
+	if len(filters.Sources) > 0 {
+		alternatives := make([]query.Query, 0, len(filters.Sources))
+		for _, source := range filters.Sources {
+			alternatives = append(alternatives, termQuery("source", string(source)))
+		}
+		boolean.AddMust(bleve.NewDisjunctionQuery(alternatives...))
+	}
+	for _, tag := range filters.Tags {
+		boolean.AddMust(termQuery("tags", tag))
+	}
+	for _, tag := range filters.ExcludedTags {
+		boolean.AddMustNot(termQuery("tags", tag))
+	}
+	for _, path := range filters.PathPrefixes {
+		wildcard := bleve.NewWildcardQuery("*" + escapeWildcard(strings.ToLower(filepath.ToSlash(path))) + "*")
+		wildcard.SetField("path")
+		boolean.AddMust(wildcard)
+	}
+	if len(filters.Domains) > 0 {
+		alternatives := make([]query.Query, 0, len(filters.Domains))
+		for _, domain := range filters.Domains {
+			alternatives = append(alternatives, termQuery("domain", domain))
+		}
+		boolean.AddMust(bleve.NewDisjunctionQuery(alternatives...))
+	}
+	if len(filters.Kinds) > 0 {
+		alternatives := make([]query.Query, 0, len(filters.Kinds))
+		for _, kind := range filters.Kinds {
+			alternatives = append(alternatives, termQuery("kind", kind))
+		}
+		boolean.AddMust(bleve.NewDisjunctionQuery(alternatives...))
+	}
+	if filters.After != nil || filters.Before != nil {
+		var minimum, maximum *float64
+		if filters.After != nil {
+			value := float64(filters.After.Unix())
+			minimum = &value
+		}
+		if filters.Before != nil {
+			value := float64(filters.Before.Unix())
+			maximum = &value
+		}
+		minInclusive, maxInclusive := true, false
+		rangeQuery := bleve.NewNumericRangeInclusiveQuery(minimum, maximum, &minInclusive, &maxInclusive)
+		rangeQuery.SetField("modified_at")
+		boolean.AddMust(rangeQuery)
+	}
+	if filters.DocumentIDs != nil {
+		boolean.AddMust(bleve.NewDocIDQuery(filters.DocumentIDs))
+	}
+	return boolean
+}
+
+func termQuery(field, value string) query.Query {
+	term := bleve.NewTermQuery(strings.ToLower(value))
+	term.SetField(field)
+	return term
+}
+
+func textFieldDisjunction(value string, phrase bool) query.Query {
+	fields := []string{"title", "content"}
+	clauses := make([]query.Query, 0, len(fields))
+	for _, field := range fields {
+		if phrase {
+			clause := bleve.NewMatchPhraseQuery(value)
+			clause.SetField(field)
+			clauses = append(clauses, clause)
+		} else {
+			clause := bleve.NewMatchQuery(value)
+			clause.SetField(field)
+			clauses = append(clauses, clause)
+		}
+	}
+	return bleve.NewDisjunctionQuery(clauses...)
+}
+
+func escapeWildcard(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`).Replace(value)
+}
+
+func lowerValues(values []string) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = strings.ToLower(value)
+	}
+	return result
 }
 
 // buildQuery builds a Bleve query from a query string.
