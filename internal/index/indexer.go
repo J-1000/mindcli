@@ -88,6 +88,15 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	if cfg.Sources.DOCX.Enabled {
+		srcs = append(srcs, sources.NewDOCXSource(
+			cfg.Sources.DOCX.Paths,
+			cfg.Sources.DOCX.Ignore,
+			cfg.Sources.DOCX.MaxFileBytes,
+			cfg.Sources.DOCX.MaxDecompressedBytes,
+		))
+	}
+
 	// Add email source if enabled
 	if cfg.Sources.Email.Enabled {
 		emailSrc := sources.NewEmailSource(
