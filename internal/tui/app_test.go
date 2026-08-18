@@ -81,8 +81,8 @@ func TestNextSourceFilter(t *testing.T) {
 		t.Errorf("after all, got %q, want markdown", got)
 	}
 	// Cycling from the last source wraps back to all.
-	if got := nextSourceFilter(storage.SourceClipboard); got != "" {
-		t.Errorf("after clipboard, got %q, want \"\" (all)", got)
+	if got := nextSourceFilter(storage.SourceCode); got != "" {
+		t.Errorf("after code, got %q, want \"\" (all)", got)
 	}
 }
 

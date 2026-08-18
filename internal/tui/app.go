@@ -822,10 +822,7 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 // sourceFilterCycle is the order the 'f' key rotates through ("" = all).
-var sourceFilterCycle = []storage.Source{
-	"", storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail,
-	storage.SourceBrowser, storage.SourceClipboard,
-}
+var sourceFilterCycle = append([]storage.Source{""}, storage.KnownSources()...)
 
 func nextSourceFilter(current storage.Source) storage.Source {
 	for i, s := range sourceFilterCycle {

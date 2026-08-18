@@ -591,13 +591,7 @@ func runWatch() error {
 }
 
 func startWatching(indexer *index.Indexer, cfg *config.Config) error {
-	var paths []string
-	if cfg.Sources.Markdown.Enabled {
-		paths = append(paths, cfg.Sources.Markdown.Paths...)
-	}
-	if cfg.Sources.PDF.Enabled {
-		paths = append(paths, cfg.Sources.PDF.Paths...)
-	}
+	paths := sourceWatchPaths(cfg)
 
 	if len(paths) == 0 {
 		return fmt.Errorf("no paths to watch")
@@ -608,7 +602,7 @@ func startWatching(indexer *index.Indexer, cfg *config.Config) error {
 		return fmt.Errorf("creating watcher: %w", err)
 	}
 
-	fmt.Printf("Watching %d directories for changes (Ctrl+C to stop)...\n", len(paths))
+	fmt.Printf("Watching %d source paths for changes (Ctrl+C to stop)...\n", len(paths))
 	for _, p := range paths {
 		fmt.Printf("  %s\n", p)
 	}
@@ -626,6 +620,44 @@ func startWatching(indexer *index.Indexer, cfg *config.Config) error {
 	}()
 
 	return watcher.Start(ctx)
+}
+
+func sourceWatchPaths(cfg *config.Config) []string {
+	paths := []string{cfg.Capture.Inbox}
+	if cfg.Sources.Markdown.Enabled {
+		paths = append(paths, cfg.Sources.Markdown.Paths...)
+	}
+	if cfg.Sources.PDF.Enabled {
+		paths = append(paths, cfg.Sources.PDF.Paths...)
+	}
+	if cfg.Sources.Email.Enabled {
+		paths = append(paths, cfg.Sources.Email.Paths...)
+	}
+	for _, source := range []config.FileSourceConfig{
+		cfg.Sources.HTML, cfg.Sources.DOCX, cfg.Sources.EPUB, cfg.Sources.Org,
+	} {
+		if source.Enabled {
+			paths = append(paths, source.Paths...)
+		}
+	}
+	if cfg.Sources.Code.Enabled {
+		paths = append(paths, cfg.Sources.Code.Paths...)
+	}
+
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "." || path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		result = append(result, path)
+	}
+	return result
 }
 
 func runSearch(queryStr string) error {
@@ -1569,10 +1601,7 @@ func runStats() error {
 	fmt.Printf("Documents: %d\n", total)
 
 	fmt.Println("By source:")
-	for _, src := range []storage.Source{
-		storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail,
-		storage.SourceBrowser, storage.SourceClipboard,
-	} {
+	for _, src := range storage.KnownSources() {
 		if n, _ := s.db.CountDocumentsBySource(ctx, src); n > 0 {
 			fmt.Printf("  %-10s %d\n", src, n)
 		}
@@ -1692,6 +1721,36 @@ func runDoctor() error {
 	checkPaths("markdown", cfg.Sources.Markdown.Enabled, cfg.Sources.Markdown.Paths)
 	checkPaths("pdf", cfg.Sources.PDF.Enabled, cfg.Sources.PDF.Paths)
 	checkPaths("email", cfg.Sources.Email.Enabled, cfg.Sources.Email.Paths)
+	checkPaths("html", cfg.Sources.HTML.Enabled, cfg.Sources.HTML.Paths)
+	checkPaths("docx", cfg.Sources.DOCX.Enabled, cfg.Sources.DOCX.Paths)
+	checkPaths("epub", cfg.Sources.EPUB.Enabled, cfg.Sources.EPUB.Paths)
+	checkPaths("org", cfg.Sources.Org.Enabled, cfg.Sources.Org.Paths)
+	checkPaths("code", cfg.Sources.Code.Enabled, cfg.Sources.Code.Paths)
+
+	ocrCommand, ocrCommandErr := exec.LookPath(cfg.Sources.PDF.OCRCommand)
+	ocrRenderer, ocrRendererErr := exec.LookPath(cfg.Sources.PDF.OCRRenderer)
+	if cfg.Sources.PDF.OCREnabled {
+		if ocrCommandErr != nil {
+			fmt.Printf("x PDF OCR command missing: %s\n", cfg.Sources.PDF.OCRCommand)
+		}
+		if ocrRendererErr != nil {
+			fmt.Printf("x PDF OCR renderer missing: %s\n", cfg.Sources.PDF.OCRRenderer)
+		}
+		if ocrCommandErr == nil && ocrRendererErr == nil {
+			fmt.Printf("ok PDF OCR enabled: %s + %s, at most %d pages\n", ocrCommand, ocrRenderer, cfg.Sources.PDF.OCRMaxPages)
+		}
+	} else if ocrCommandErr == nil && ocrRendererErr == nil {
+		fmt.Printf("ok optional PDF OCR available but disabled: %s + %s\n", ocrCommand, ocrRenderer)
+	} else {
+		fmt.Println("! optional PDF OCR disabled; install tesseract and pdftoppm before enabling it")
+	}
+	if cfg.Sources.Email.Enabled && cfg.Sources.Email.ExtractAttachments {
+		fmt.Printf("! email attachment text extraction enabled: %d-byte attachment, %d-byte expansion, depth %d limits\n",
+			cfg.Sources.Email.MaxAttachmentBytes,
+			cfg.Sources.Email.MaxDecompressedBytes,
+			cfg.Sources.Email.MaxArchiveDepth,
+		)
+	}
 
 	dataDir, err := cfg.DataDir()
 	if err != nil {

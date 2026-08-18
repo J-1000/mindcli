@@ -186,7 +186,11 @@ func applyStructuredFilter(filters *filter.Set, token queryToken) (bool, error) 
 
 	switch name {
 	case "source", "type":
-		filters.Sources = appendUniqueSource(filters.Sources, storage.Source(strings.ToLower(value)))
+		source := storage.Source(strings.ToLower(value))
+		if !storage.IsKnownSource(source) {
+			return false, fmt.Errorf("unknown source %q (valid sources: %s)", value, knownSourceNames())
+		}
+		filters.Sources = appendUniqueSource(filters.Sources, source)
 	case "tag":
 		value = strings.ToLower(value)
 		if negated {
@@ -259,6 +263,13 @@ func applyNaturalSourceHeuristic(parsed *ParsedQuery, text string) string {
 		{"in emails", storage.SourceEmail},
 		{"in pdfs", storage.SourcePDF},
 		{"in pdf", storage.SourcePDF},
+		{"in html", storage.SourceHTML},
+		{"in web archives", storage.SourceHTML},
+		{"in docx", storage.SourceDOCX},
+		{"in ebooks", storage.SourceEPUB},
+		{"in epubs", storage.SourceEPUB},
+		{"in org files", storage.SourceOrg},
+		{"in code", storage.SourceCode},
 	}
 	for _, keyword := range keywords {
 		updated, found := removeFoldOnce(text, keyword.phrase)
@@ -271,6 +282,14 @@ func applyNaturalSourceHeuristic(parsed *ParsedQuery, text string) string {
 		return strings.TrimSpace(updated)
 	}
 	return strings.TrimSpace(text)
+}
+
+func knownSourceNames() string {
+	values := make([]string, 0, len(storage.KnownSources()))
+	for _, source := range storage.KnownSources() {
+		values = append(values, string(source))
+	}
+	return strings.Join(values, ", ")
 }
 
 func applyNaturalTimeHeuristic(parsed *ParsedQuery, text string) string {

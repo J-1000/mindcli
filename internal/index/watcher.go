@@ -174,6 +174,13 @@ func (w *Watcher) processPending(ctx context.Context) {
 
 // addRecursive adds a directory and all subdirectories to the watcher.
 func (w *Watcher) addRecursive(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return w.watcher.Add(filepath.Dir(path))
+	}
 	return filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -181,7 +188,8 @@ func (w *Watcher) addRecursive(path string) error {
 		if d.IsDir() {
 			name := d.Name()
 			// Skip common directories that shouldn't be watched.
-			if name == ".git" || name == "node_modules" || name == ".obsidian" {
+			if name == ".git" || name == ".hg" || name == ".svn" || name == "node_modules" ||
+				name == "vendor" || name == "dist" || name == "build" || name == ".obsidian" {
 				return filepath.SkipDir
 			}
 			return w.watcher.Add(p)

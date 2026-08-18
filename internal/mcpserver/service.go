@@ -61,7 +61,7 @@ func NewService(db *storage.DB, searcher Searcher, llm AnswerGenerator, redactor
 
 // FilterInput is the typed MCP representation of MindCLI's structured filters.
 type FilterInput struct {
-	Sources       []string `json:"sources,omitempty" jsonschema:"document sources: markdown, pdf, email, browser, or clipboard"`
+	Sources       []string `json:"sources,omitempty" jsonschema:"document sources: markdown, pdf, email, browser, clipboard, html, docx, epub, org, or code"`
 	Tags          []string `json:"tags,omitempty" jsonschema:"tags every result must contain"`
 	ExcludedTags  []string `json:"excluded_tags,omitempty" jsonschema:"tags results must not contain"`
 	Collections   []string `json:"collections,omitempty" jsonschema:"collection names; multiple names form a union"`
@@ -491,10 +491,9 @@ func (input FilterInput) toFilterSet() (filter.Set, error) {
 	}
 	for _, value := range input.Sources {
 		source := storage.Source(strings.ToLower(strings.TrimSpace(value)))
-		switch source {
-		case storage.SourceMarkdown, storage.SourcePDF, storage.SourceEmail, storage.SourceBrowser, storage.SourceClipboard:
+		if storage.IsKnownSource(source) {
 			set.Sources = appendUniqueSource(set.Sources, source)
-		default:
+		} else {
 			return filter.Set{}, fmt.Errorf("unknown source %q", value)
 		}
 	}
