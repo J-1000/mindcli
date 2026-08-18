@@ -3,6 +3,7 @@
 package chunker
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -60,6 +61,208 @@ func Split(text string, opts Options) []Chunk {
 	// Split into paragraphs first, then merge/split to target size.
 	paragraphs := splitParagraphs(text)
 	return mergeAndSplit(text, paragraphs, opts)
+}
+
+// SplitCode divides source text at language-aware declaration boundaries, then
+// uses line boundaries for oversized declarations. This keeps functions and
+// types intact whenever they fit in the target chunk size.
+func SplitCode(text, language string, opts Options) []Chunk {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if opts.ChunkSize <= 0 {
+		opts.ChunkSize = DefaultChunkSize
+	}
+	if opts.Overlap < 0 {
+		opts.Overlap = 0
+	}
+	if opts.Overlap >= opts.ChunkSize {
+		opts.Overlap = opts.ChunkSize / 4
+	}
+
+	boundaries := codeDeclarationBoundaries(text, strings.ToLower(strings.TrimSpace(language)))
+	if len(boundaries) == 0 {
+		return splitCodeLines(text, 0, opts)
+	}
+	if boundaries[0] > 0 {
+		if len(boundaries) == 1 || nextBoundaryLength(text, boundaries[0], boundaries) > opts.ChunkSize || boundaries[0] > opts.ChunkSize/2 {
+			boundaries = append([]int{0}, boundaries...)
+		} else {
+			boundaries[0] = 0
+		}
+	}
+	if boundaries[0] != 0 {
+		boundaries = append([]int{0}, boundaries...)
+	}
+
+	var chunks []Chunk
+	for index, start := range boundaries {
+		end := len(text)
+		if index+1 < len(boundaries) {
+			end = boundaries[index+1]
+		}
+		if end <= start {
+			continue
+		}
+		chunks = append(chunks, splitCodeLines(text[start:end], start, opts)...)
+	}
+	return chunks
+}
+
+func codeDeclarationBoundaries(text, language string) []int {
+	var boundaries []int
+	offset := 0
+	pendingDecorator := -1
+	for offset < len(text) {
+		lineEnd := strings.IndexByte(text[offset:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += offset
+		}
+		line := text[offset:lineEnd]
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if (language == "python" || language == "ruby") && indent == 0 && strings.HasPrefix(trimmed, "@") {
+			if pendingDecorator < 0 {
+				pendingDecorator = offset
+			}
+		} else if isCodeDeclaration(trimmed, language, indent) {
+			boundary := offset
+			if pendingDecorator >= 0 {
+				boundary = pendingDecorator
+			}
+			boundaries = append(boundaries, boundary)
+			pendingDecorator = -1
+		} else if trimmed != "" && pendingDecorator >= 0 {
+			pendingDecorator = -1
+		}
+		if lineEnd == len(text) {
+			break
+		}
+		offset = lineEnd + 1
+	}
+	sort.Ints(boundaries)
+	unique := boundaries[:0]
+	for _, boundary := range boundaries {
+		if len(unique) == 0 || unique[len(unique)-1] != boundary {
+			unique = append(unique, boundary)
+		}
+	}
+	return unique
+}
+
+func isCodeDeclaration(line, language string, indent int) bool {
+	if line == "" {
+		return false
+	}
+	prefixes := []string{}
+	switch language {
+	case "go":
+		if indent > 0 {
+			return false
+		}
+		prefixes = []string{"func ", "type ", "const (", "var ("}
+	case "python":
+		if indent > 0 {
+			return false
+		}
+		prefixes = []string{"def ", "async def ", "class "}
+	case "rust":
+		if indent > 0 {
+			return false
+		}
+		prefixes = []string{"fn ", "pub fn ", "async fn ", "pub async fn ", "struct ", "pub struct ", "enum ", "pub enum ", "trait ", "pub trait ", "impl ", "mod ", "pub mod "}
+	case "javascript", "typescript":
+		if indent > 8 {
+			return false
+		}
+		prefixes = []string{"function ", "async function ", "export function ", "export async function ", "class ", "export class ", "interface ", "export interface ", "type ", "export type ", "const ", "export const "}
+	case "java", "kotlin", "scala", "c", "cpp", "csharp", "swift", "objective-c", "objective-cpp":
+		if indent > 8 {
+			return false
+		}
+		prefixes = []string{"class ", "public class ", "private class ", "protected class ", "interface ", "public interface ", "struct ", "public struct ", "enum ", "public enum ", "func ", "public func ", "private func ", "static ", "public static ", "private static "}
+	case "ruby":
+		if indent > 0 {
+			return false
+		}
+		prefixes = []string{"def ", "class ", "module "}
+	case "shell", "fish":
+		if indent > 0 {
+			return false
+		}
+		return strings.HasPrefix(line, "function ") || strings.Contains(line, "() {")
+	default:
+		if indent > 0 {
+			return false
+		}
+		prefixes = []string{"function ", "class ", "interface ", "struct ", "enum ", "def ", "fn ", "type "}
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func nextBoundaryLength(text string, first int, boundaries []int) int {
+	if len(boundaries) < 2 {
+		return len(text) - first
+	}
+	return boundaries[1] - first
+}
+
+func splitCodeLines(text string, basePos int, opts Options) []Chunk {
+	start := 0
+	var chunks []Chunk
+	for start < len(text) {
+		for start < len(text) && unicode.IsSpace(rune(text[start])) {
+			start++
+		}
+		if start >= len(text) {
+			break
+		}
+		end := len(text)
+		if end-start > opts.ChunkSize {
+			end = start + opts.ChunkSize
+			if newline := strings.LastIndexByte(text[start:end], '\n'); newline > opts.ChunkSize/4 {
+				end = start + newline
+			} else if next := strings.IndexByte(text[end:], '\n'); next >= 0 && next < opts.ChunkSize/2 {
+				end += next
+			}
+		}
+		trimmedEnd := end
+		for trimmedEnd > start && unicode.IsSpace(rune(text[trimmedEnd-1])) {
+			trimmedEnd--
+		}
+		if trimmedEnd > start {
+			chunks = append(chunks, Chunk{
+				Content:  text[start:trimmedEnd],
+				StartPos: basePos + start,
+				EndPos:   basePos + trimmedEnd,
+			})
+		}
+		if end >= len(text) {
+			break
+		}
+		nextStart := end
+		if opts.Overlap > 0 {
+			nextStart = end - opts.Overlap
+			if nextStart < start+1 {
+				nextStart = start + 1
+			}
+			if newline := strings.IndexByte(text[nextStart:end], '\n'); newline >= 0 {
+				nextStart += newline + 1
+			}
+		}
+		if nextStart <= start {
+			nextStart = end
+		}
+		start = nextStart
+	}
+	return chunks
 }
 
 // splitParagraphs splits text into paragraph segments, preserving positions.

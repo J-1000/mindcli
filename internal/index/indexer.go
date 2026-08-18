@@ -662,7 +662,12 @@ func (idx *Indexer) embedDocument(ctx context.Context, doc *storage.Document) er
 	}
 
 	// Chunk the document content.
-	chunks := chunker.Split(doc.Content, chunker.DefaultOptions())
+	var chunks []chunker.Chunk
+	if doc.Source == storage.SourceCode {
+		chunks = chunker.SplitCode(doc.Content, doc.Metadata["language"], chunker.DefaultOptions())
+	} else {
+		chunks = chunker.Split(doc.Content, chunker.DefaultOptions())
+	}
 	if len(chunks) == 0 {
 		return nil
 	}
