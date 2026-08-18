@@ -80,6 +80,126 @@ func TestBuildBrowserDocument(t *testing.T) {
 	}
 }
 
+func TestBuildBrowserDocumentsDeduplicatesNormalizedURLs(t *testing.T) {
+	lastVisit := time.Date(2026, 8, 17, 14, 30, 0, 0, time.UTC)
+	file := FileInfo{
+		Path:       "/Users/test/Library/Application Support/Google/Chrome/Default/History",
+		ModifiedAt: lastVisit.Add(time.Hour).Unix(),
+	}
+	entries := []historyEntry{
+		{
+			URL:        "https://Example.com/article?utm_source=newsletter&id=7#intro",
+			Title:      "Article",
+			VisitCount: 4,
+			LastVisit:  lastVisit,
+			Browser:    "chrome",
+			Kind:       "history",
+		},
+		{
+			URL:     "https://example.com:443/article?id=7",
+			Title:   "Saved Article",
+			AddedAt: lastVisit.Add(-time.Hour),
+			Browser: "chrome",
+			Kind:    "bookmark",
+		},
+		{
+			URL:        "https://go.dev/",
+			Title:      "Go",
+			VisitCount: 2,
+			LastVisit:  lastVisit.Add(-time.Hour),
+			Browser:    "chrome",
+			Kind:       "history",
+		},
+	}
+
+	docs := buildBrowserDocuments(file, "chrome", entries)
+	if len(docs) != 2 {
+		t.Fatalf("len(docs) = %d, want 2", len(docs))
+	}
+
+	doc := docs[0]
+	if doc.Source != storage.SourceBrowser {
+		t.Fatalf("Source = %q, want browser", doc.Source)
+	}
+	if doc.Path != entries[0].URL {
+		t.Errorf("Path = %q, want openable URL %q", doc.Path, entries[0].URL)
+	}
+	if doc.Metadata["normalized_url"] != "https://example.com/article?id=7" {
+		t.Errorf("normalized_url = %q", doc.Metadata["normalized_url"])
+	}
+	if doc.Metadata["profile"] != "Default" {
+		t.Errorf("profile = %q, want Default", doc.Metadata["profile"])
+	}
+	if doc.Metadata["kind"] != "history,bookmark" {
+		t.Errorf("kind = %q, want history,bookmark", doc.Metadata["kind"])
+	}
+	if doc.Metadata["visit_count"] != "4" {
+		t.Errorf("visit_count = %q, want 4", doc.Metadata["visit_count"])
+	}
+	if doc.Metadata["last_visit"] != lastVisit.Format(time.RFC3339) {
+		t.Errorf("last_visit = %q", doc.Metadata["last_visit"])
+	}
+	if doc.ID == "" || doc.ContentHash == "" {
+		t.Error("document is missing stable identity or content hash")
+	}
+
+	reordered := buildBrowserDocuments(file, "chrome", []historyEntry{entries[1], entries[0]})
+	if len(reordered) != 1 || reordered[0].ID != doc.ID {
+		t.Fatalf("stable ID changed after entry reordering: %q vs %q", reordered[0].ID, doc.ID)
+	}
+
+	otherProfile := file
+	otherProfile.Path = "/Users/test/Library/Application Support/Google/Chrome/Profile 1/History"
+	otherDocs := buildBrowserDocuments(otherProfile, "chrome", entries[:1])
+	if otherDocs[0].ID == doc.ID {
+		t.Error("same URL in different browser profiles must have different IDs")
+	}
+}
+
+func TestNormalizeBrowserURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "canonical host port query and fragment",
+			raw:  "HTTPS://Example.COM:443/path?utm_source=x&b=2&a=1#section",
+			want: "https://example.com/path?a=1&b=2",
+		},
+		{name: "root path", raw: "http://example.com", want: "http://example.com/"},
+		{name: "credentials omitted", raw: "https://user:pass@example.com/a", want: "https://example.com/a"},
+		{name: "invalid", raw: "not a URL", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeBrowserURL(tt.raw); got != tt.want {
+				t.Fatalf("normalizeBrowserURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBrowserSourceRecognizesLegacyReconciliationScope(t *testing.T) {
+	src := NewBrowserSource([]string{"chrome"})
+	file := FileInfo{Path: "/Users/test/Library/Application Support/Google/Chrome/Default/History"}
+	legacy := buildBrowserDocument(file, "chrome", []historyEntry{{
+		URL: "https://example.com", Title: "Example", Browser: "chrome", Kind: "history",
+	}})
+
+	if got := src.ReconciliationScope(file); got != "chrome:Default" {
+		t.Fatalf("ReconciliationScope() = %q, want chrome:Default", got)
+	}
+	if !src.IsDocumentInScope(file, legacy) {
+		t.Error("legacy aggregate document was not recognized in browser profile scope")
+	}
+	legacy.Metadata["browser"] = "firefox"
+	if src.IsDocumentInScope(file, legacy) {
+		t.Error("document from another browser was included in profile scope")
+	}
+}
+
 func TestReadChromeBookmarks(t *testing.T) {
 	tmpDir := t.TempDir()
 

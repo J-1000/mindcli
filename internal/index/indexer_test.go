@@ -176,6 +176,63 @@ A note in a subdirectory.
 	}
 }
 
+func TestIndexer_ReconcilesMultiDocumentSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestDB(t, db)
+	searchIdx, err := search.NewBleveIndex(filepath.Join(tmpDir, "test.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIndexerTestSearch(t, searchIdx)
+
+	now := time.Now().UTC()
+	src := &mockReconciledSource{
+		mockSource: mockSource{
+			name: storage.SourceBrowser,
+			scanFiles: []sources.FileInfo{{
+				Path: "/browser/profile/History", ModifiedAt: now.Unix(),
+			}},
+		},
+		scope: "browser:profile",
+		documents: []*storage.Document{
+			{ID: "page-1", Source: storage.SourceBrowser, Path: "https://one.example", Title: "One", Content: "one", ContentHash: "one", IndexedAt: now, ModifiedAt: now},
+			{ID: "page-2", Source: storage.SourceBrowser, Path: "https://two.example", Title: "Two", Content: "two", ContentHash: "two", IndexedAt: now, ModifiedAt: now},
+		},
+	}
+	indexer := NewIndexer(db, searchIdx, nil, nil, &config.Config{Indexing: config.IndexingConfig{Workers: 1}})
+	indexer.sources = []sources.Source{src}
+
+	stats, err := indexer.IndexAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalFiles != 1 || stats.IndexedFiles != 2 || stats.Errors != 0 {
+		t.Fatalf("first stats = %+v, want 1 artifact and 2 documents", stats)
+	}
+	stored, err := db.GetDocument(context.Background(), "page-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Metadata[sources.IngestionScopeMetadata] != src.scope {
+		t.Fatalf("ingestion scope = %q, want %q", stored.Metadata[sources.IngestionScopeMetadata], src.scope)
+	}
+
+	src.documents = src.documents[1:]
+	if _, err := indexer.IndexAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetDocument(context.Background(), "page-1"); err != storage.ErrNotFound {
+		t.Fatalf("stale document lookup error = %v, want ErrNotFound", err)
+	}
+	if count, err := searchIdx.Count(); err != nil || count != 1 {
+		t.Fatalf("search count = %d, err = %v, want 1", count, err)
+	}
+}
+
 func TestIndexer_RedactsContentWhenEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	notesDir := filepath.Join(tmpDir, "notes")
@@ -664,6 +721,24 @@ type mockSource struct {
 	scanCalls  int
 	parseCalls int
 	lastParsed sources.FileInfo
+}
+
+type mockReconciledSource struct {
+	mockSource
+	scope     string
+	documents []*storage.Document
+}
+
+func (m *mockReconciledSource) ParseDocuments(context.Context, sources.FileInfo) ([]*storage.Document, error) {
+	return m.documents, nil
+}
+
+func (m *mockReconciledSource) ReconciliationScope(sources.FileInfo) string {
+	return m.scope
+}
+
+func (m *mockReconciledSource) IsDocumentInScope(_ sources.FileInfo, doc *storage.Document) bool {
+	return doc.Metadata[sources.IngestionScopeMetadata] == m.scope
 }
 
 func (m *mockSource) Name() storage.Source { return m.name }
