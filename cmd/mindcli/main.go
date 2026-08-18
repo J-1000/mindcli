@@ -159,11 +159,12 @@ func buildRedactor(cfg *config.Config) privacy.Redactor {
 
 // openOpts selects which subsystems openStores wires up.
 type openOpts struct {
-	vectors  bool // open/create the vector store
-	embedder bool // set up the embedder (cached)
-	llm      bool // set up the LLM client
-	hybrid   bool // build a hybrid searcher (needs vectors + embedder)
-	indexing bool // indexing mode: create vectors even if empty; test embedder connectivity
+	vectors      bool // open/create the vector store
+	embedder     bool // set up the embedder (cached)
+	llm          bool // set up the LLM client
+	hybrid       bool // build a hybrid searcher (needs vectors + embedder)
+	indexing     bool // indexing mode: create vectors even if empty; test embedder connectivity
+	resetVectors bool // discard the in-memory graph before a forced full reindex
 }
 
 // stores holds the open handles shared across commands. Always includes the
@@ -214,7 +215,7 @@ func openStores(opts openOpts) (*stores, error) {
 	s.bleve = bleve
 
 	if opts.vectors {
-		s.openVectors(opts.indexing)
+		s.openVectors(opts.indexing, opts.resetVectors)
 	}
 	if opts.embedder {
 		s.openEmbedder(opts.indexing)
@@ -237,7 +238,7 @@ func openStores(opts openOpts) (*stores, error) {
 // openVectors loads the vector store. In indexing mode it is always created
 // (so embeddings can be added); otherwise it is only loaded when a non-empty
 // graph already exists on disk.
-func (s *stores) openVectors(indexing bool) {
+func (s *stores) openVectors(indexing, reset bool) {
 	vectorPath := filepath.Join(s.dataDir, "vectors.graph")
 	if indexing {
 		vs, err := storage.NewVectorStore(vectorPath)
@@ -245,13 +246,21 @@ func (s *stores) openVectors(indexing bool) {
 			fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
 			return
 		}
-		// Warn loudly if the configured model differs from the one that
-		// produced the existing vectors: dimensions may not match and a full
-		// reindex (mindcli index -force) is needed for consistent results.
-		if prev := vs.Model(); prev != "" && prev != s.cfg.Embeddings.Model {
+		if reset {
+			vs.Reset(s.cfg.Embeddings.Model)
+			s.vectors = vs
+			return
+		}
+		if vs.Len() > 0 && vs.Model() == "" {
+			fmt.Fprintln(os.Stderr,
+				"warning: vector store has no model metadata; semantic indexing disabled; run 'mindcli reindex' to rebuild it")
+			return
+		}
+		if prev := vs.Model(); vs.Len() > 0 && prev != s.cfg.Embeddings.Model {
 			fmt.Fprintf(os.Stderr,
-				"warning: embedding model changed (%s -> %s); run 'mindcli index -force' to rebuild the vector index\n",
+				"warning: embedding model changed (%s -> %s); semantic indexing disabled; run 'mindcli reindex' to rebuild it\n",
 				prev, s.cfg.Embeddings.Model)
+			return
 		}
 		vs.SetModel(s.cfg.Embeddings.Model)
 		s.vectors = vs
@@ -262,10 +271,23 @@ func (s *stores) openVectors(indexing bool) {
 	}
 	vs, err := storage.NewVectorStore(vectorPath)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: vector store unavailable: %v\n", err)
 		return
 	}
 	if vs.Len() == 0 {
-		_ = vs.Close()
+		vs.SetModel(s.cfg.Embeddings.Model)
+		s.vectors = vs
+		return
+	}
+	if vs.Model() == "" {
+		fmt.Fprintln(os.Stderr,
+			"warning: vector store has no model metadata; semantic search disabled; run 'mindcli reindex' to rebuild it")
+		return
+	}
+	if vs.Model() != s.cfg.Embeddings.Model {
+		fmt.Fprintf(os.Stderr,
+			"warning: vector store model %q does not match configured model %q; semantic search disabled; run 'mindcli reindex'\n",
+			vs.Model(), s.cfg.Embeddings.Model)
 		return
 	}
 	s.vectors = vs
@@ -379,10 +401,13 @@ func runTUI() error {
 	// store exists so embeddings can be added on a first index.
 	vectors := s.vectors
 	if vectors == nil {
-		if vs, vErr := storage.NewVectorStore(filepath.Join(s.dataDir, "vectors.graph")); vErr == nil {
-			vs.SetModel(s.cfg.Embeddings.Model)
-			vectors = vs
-			defer func() { _ = vs.Close() }()
+		vectorPath := filepath.Join(s.dataDir, "vectors.graph")
+		if _, statErr := os.Stat(vectorPath); os.IsNotExist(statErr) {
+			if vs, vErr := storage.NewVectorStore(vectorPath); vErr == nil {
+				vs.SetModel(s.cfg.Embeddings.Model)
+				vectors = vs
+				defer func() { _ = vs.Close() }()
+			}
 		}
 	}
 	indexer := index.NewIndexer(s.db, s.bleve, vectors, s.embedder, s.cfg)
@@ -407,7 +432,7 @@ func runTUI() error {
 }
 
 func runIndex(pathsOverride string, watch, force bool) error {
-	s, err := openStores(openOpts{vectors: true, embedder: true, indexing: true})
+	s, err := openStores(openOpts{vectors: true, embedder: true, indexing: true, resetVectors: force})
 	if err != nil {
 		return err
 	}
