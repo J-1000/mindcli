@@ -124,6 +124,15 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	if cfg.Sources.Code.Enabled {
+		srcs = append(srcs, sources.NewCodeSource(
+			cfg.Sources.Code.Paths,
+			cfg.Sources.Code.Ignore,
+			cfg.Sources.Code.MaxFileBytes,
+			cfg.Sources.Code.MaxFiles,
+		))
+	}
+
 	// Add email source if enabled
 	if cfg.Sources.Email.Enabled {
 		emailSrc := sources.NewEmailSource(
