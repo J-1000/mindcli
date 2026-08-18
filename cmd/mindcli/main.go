@@ -79,6 +79,8 @@ func run() error {
 			return runAdd(os.Args[2:])
 		case "save":
 			return runSave(os.Args[2:])
+		case "session":
+			return runSession(os.Args[2:])
 		case "export":
 			return runExport(os.Args[2:])
 		case "tag":
@@ -126,6 +128,7 @@ Usage:
   mindcli mcp          Serve the read-only MCP protocol over stdio
   mindcli add ...      Capture text into the Markdown inbox
   mindcli save URL     Save a URL into the Markdown inbox
+  mindcli session ...  Manage persistent research sessions
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
