@@ -33,6 +33,9 @@ generated answers, timestamps, citation snapshots, and included/pinned/excluded
 document IDs. This happens only after `mindcli session resume NAME`; the default
 TUI's follow-up history remains memory-only.
 
+Collection activity metadata is stored in the same database: the last-viewed
+timestamp and document IDs previously observed in smart-collection result sets.
+
 So a note, PDF, email, browser title, fetched browser page, capture, or clipboard
 entry that you index is searchable in cleartext on disk. Captures also remain
 as cleartext Markdown source files in the configured inbox.
@@ -159,6 +162,21 @@ sources deliberately. Exact environment overrides such as
 `MINDCLI_CONFIG_PATH`, `MINDCLI_STORAGE_PATH`, and `MINDCLI_CAPTURE_INBOX` can
 also point multiple profiles at the same location; doing so explicitly weakens
 the isolation described above.
+
+## Digest boundary
+
+`mindcli digest` is on-demand only; MindCLI does not schedule notifications or
+send digest content anywhere by itself. Reports contain source titles, stable
+IDs, paths, tags, previews, and activity times, so treat exported Markdown as
+private indexed content. Display-time redaction is applied, and files created
+through `--output` use mode `0600`.
+
+If the configured LLM is available, digest synthesis sends the first five
+bounded document excerpts and the activity question through that provider. A
+remote provider therefore receives that content under its own privacy policy.
+If synthesis fails or no LLM is configured, MindCLI writes a deterministic
+local count summary instead. Successfully exporting a collection digest records
+the collection as viewed; a failed write does not advance the boundary.
 
 ## What MindCLI does not (yet) do
 

@@ -18,6 +18,7 @@ OpenAI-compatible API.
 - **Export** — Search results to JSON, CSV, or Markdown
 - **Tagging** — Manual tags on any document, displayed in TUI and searchable
 - **Collections** — Named groups of documents (like playlists), with CLI and TUI management
+- **Activity digests** — Track new collection members and export cited Markdown updates on demand
 - **Quick capture** — Save thoughts, pasted text, and public web pages into a portable Markdown inbox
 - **Fast** — Concurrent worker pool indexing, incremental updates, content-hash caching
 - **File watcher** — Real-time re-indexing via fsnotify with debouncing
@@ -99,6 +100,7 @@ mindcli collection list                      # List all collections
 mindcli collection show reading-list         # Show collection details and documents
 mindcli collection rename old-name new-name  # Rename a collection
 mindcli collection delete reading-list       # Delete a collection
+mindcli digest --since 7d --collection research --output digest.md
 mindcli ask "what did I write about Go?"     # Ask a question (streaming RAG via configured LLM)
 mindcli config                               # Initialize default config file
 mindcli config --path                        # Print the active config path
@@ -428,6 +430,35 @@ show the top search results instead. If embeddings are unavailable, search
 gracefully falls back to BM25-only mode.
 
 Follow-up questions in the TUI keep recent Q&A turns in context, so asking "tell me more" or "what about the second one?" works as a conversation. The history resets when you clear the search.
+
+### Collection activity and digests
+
+`mindcli collection list` shows manual-collection activity and view state;
+`collection show` and the TUI collection browser also resolve smart-collection
+activity. Manual collections compare membership timestamps to `last_viewed_at`.
+Smart collections snapshot the bounded set of matching document IDs when
+viewed, so later matches appear as new. The first view treats every current
+member as new. Opening a collection in the CLI/TUI or successfully exporting
+its digest advances the view boundary.
+
+Digests are generated only when requested; MindCLI does not schedule
+notifications:
+
+```bash
+mindcli digest                         # All activity from the last 7 days
+mindcli digest --since 24h
+mindcli digest --since 2w --collection research
+mindcli digest --since 2026-08-01 --limit 100 --output digest.md
+```
+
+`--since` accepts hours, days, weeks, `YYYY-MM-DD`, or RFC 3339 and is bounded
+to ten years for duration lookbacks. Results are capped at 100 (default 50).
+The Markdown report contains an activity summary plus stable document IDs,
+source types, paths, activity reasons, and numbered citations. When the
+configured LLM is available, the summary is clearly labeled as generated and
+uses the first five document excerpts; otherwise a deterministic count summary
+is emitted. Display-time redaction applies, and `--output` files use mode
+`0600`.
 
 ### Related documents
 
