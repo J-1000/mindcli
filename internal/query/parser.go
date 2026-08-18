@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/storage"
 )
 
@@ -28,9 +29,11 @@ const (
 type ParsedQuery struct {
 	Original     string      // Original query text
 	Intent       QueryIntent // What the user wants
+	Text         string      // Positive unquoted terms for typed search
 	SearchTerms  string      // Terms for BM25/vector search
 	TimeFilter   string      // Extracted time reference (e.g., "last week")
 	SourceFilter string      // Extracted source filter (e.g., "emails")
+	Filters      filter.Set  // Deterministic structured and convenience filters
 }
 
 // AnswerConfidence represents a simple confidence estimate for generated answers.
@@ -136,59 +139,17 @@ func (c *LLMClient) Generate(ctx context.Context, prompt string) (string, error)
 // ParseQuery analyzes a natural language query to extract intent and entities.
 // This works without an LLM using simple heuristics, with optional LLM enhancement.
 func ParseQuery(query string) ParsedQuery {
-	query = strings.TrimSpace(query)
-	parsed := ParsedQuery{
-		Original:    query,
+	parsed, err := ParseQueryStrict(query)
+	if err == nil {
+		return parsed
+	}
+	trimmed := strings.TrimSpace(query)
+	return ParsedQuery{
+		Original:    trimmed,
 		Intent:      IntentSearch,
-		SearchTerms: query,
+		Text:        trimmed,
+		SearchTerms: trimmed,
 	}
-
-	lower := strings.ToLower(query)
-
-	// Detect intent from keywords.
-	if strings.HasPrefix(lower, "summarize ") || strings.HasPrefix(lower, "summary of ") {
-		parsed.Intent = IntentSummarize
-		parsed.SearchTerms = strings.TrimPrefix(strings.TrimPrefix(lower, "summarize "), "summary of ")
-	} else if strings.HasPrefix(lower, "what ") || strings.HasPrefix(lower, "how ") ||
-		strings.HasPrefix(lower, "why ") || strings.HasPrefix(lower, "when ") ||
-		strings.HasPrefix(lower, "who ") || strings.HasPrefix(lower, "tell me ") {
-		parsed.Intent = IntentAnswer
-	}
-
-	// Extract source filters.
-	sourceKeywords := map[string]string{
-		"in my notes":    "markdown",
-		"in my emails":   "email",
-		"in emails":      "email",
-		"from browser":   "browser",
-		"in browser":     "browser",
-		"from clipboard": "clipboard",
-		"in pdfs":        "pdf",
-		"in pdf":         "pdf",
-	}
-	for keyword, source := range sourceKeywords {
-		if strings.Contains(lower, keyword) {
-			parsed.SourceFilter = source
-			parsed.SearchTerms = strings.Replace(lower, keyword, "", 1)
-			break
-		}
-	}
-
-	// Extract time references.
-	timeKeywords := []string{
-		"last week", "last month", "yesterday", "today",
-		"this week", "this month", "last year",
-	}
-	for _, kw := range timeKeywords {
-		if strings.Contains(lower, kw) {
-			parsed.TimeFilter = kw
-			parsed.SearchTerms = strings.Replace(parsed.SearchTerms, kw, "", 1)
-			break
-		}
-	}
-
-	parsed.SearchTerms = strings.TrimSpace(parsed.SearchTerms)
-	return parsed
 }
 
 // TimeRange converts a parsed time-filter keyword into an inclusive [start,end]
@@ -235,18 +196,36 @@ func TimeRange(filter string, now time.Time) (start, end time.Time, ok bool) {
 // inTimeRange reports whether t falls within the parsed query's time filter.
 // When there is no time filter it always returns true.
 func inTimeRange(t time.Time, parsed ParsedQuery, now time.Time) bool {
-	start, end, ok := TimeRange(parsed.TimeFilter, now)
+	if parsed.Filters.After != nil && t.Before(*parsed.Filters.After) {
+		return false
+	}
+	if parsed.Filters.Before != nil && !t.Before(*parsed.Filters.Before) {
+		return false
+	}
+	relative := parsed.Filters.RelativeTime
+	if relative == "" {
+		relative = parsed.TimeFilter
+	}
+	start, end, ok := TimeRange(relative, now)
 	if !ok {
 		return true
 	}
-	return !t.Before(start) && !t.After(end)
+	if t.Before(start) {
+		return false
+	}
+	// Ranges ending at a calendar boundary are exclusive. Ranges ending at
+	// the supplied current time remain inclusive.
+	if end.Equal(now) {
+		return !t.After(end)
+	}
+	return t.Before(end)
 }
 
 // FilterByTime drops search results whose document modification time falls
 // outside the parsed query's time filter. Results are returned unchanged when
 // there is no time filter.
 func FilterByTime(results storage.SearchResults, parsed ParsedQuery, now time.Time) storage.SearchResults {
-	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+	if !hasTimeFilter(parsed) {
 		return results
 	}
 	filtered := make(storage.SearchResults, 0, len(results))
@@ -260,7 +239,7 @@ func FilterByTime(results storage.SearchResults, parsed ParsedQuery, now time.Ti
 
 // FilterDocumentsByTime is the document-slice equivalent of FilterByTime.
 func FilterDocumentsByTime(docs []*storage.Document, parsed ParsedQuery, now time.Time) []*storage.Document {
-	if _, _, ok := TimeRange(parsed.TimeFilter, now); !ok {
+	if !hasTimeFilter(parsed) {
 		return docs
 	}
 	filtered := make([]*storage.Document, 0, len(docs))
@@ -270,6 +249,18 @@ func FilterDocumentsByTime(docs []*storage.Document, parsed ParsedQuery, now tim
 		}
 	}
 	return filtered
+}
+
+func hasTimeFilter(parsed ParsedQuery) bool {
+	if parsed.Filters.After != nil || parsed.Filters.Before != nil {
+		return true
+	}
+	relative := parsed.Filters.RelativeTime
+	if relative == "" {
+		relative = parsed.TimeFilter
+	}
+	_, _, ok := TimeRange(relative, time.Now())
+	return ok
 }
 
 // ConversationTurn is a prior question/answer pair for follow-up context.
