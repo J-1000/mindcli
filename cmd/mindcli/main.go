@@ -2,22 +2,27 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"log/slog"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/capture"
 	"github.com/J-1000/mindcli/internal/config"
 	"github.com/J-1000/mindcli/internal/embeddings"
 	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/index"
+	"github.com/J-1000/mindcli/internal/index/sources"
 	"github.com/J-1000/mindcli/internal/mcpserver"
 	"github.com/J-1000/mindcli/internal/privacy"
 	"github.com/J-1000/mindcli/internal/query"
@@ -70,6 +75,10 @@ func run() error {
 			return runRelated(os.Args[2:])
 		case "mcp":
 			return runMCP()
+		case "add":
+			return runAdd(os.Args[2:])
+		case "save":
+			return runSave(os.Args[2:])
 		case "export":
 			return runExport(os.Args[2:])
 		case "tag":
@@ -115,6 +124,8 @@ Usage:
   mindcli search "..." Search and print results
   mindcli related ...  Find documents related to a path or stable ID
   mindcli mcp          Serve the read-only MCP protocol over stdio
+  mindcli add ...      Capture text into the Markdown inbox
+  mindcli save URL     Save a URL into the Markdown inbox
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
@@ -142,6 +153,8 @@ Examples:
   mindcli related ~/notes/project.md            # Find related documents
   mindcli related --id DOCUMENT_ID --limit 10   # Find related documents by stable ID
   mindcli mcp                                      # Connect an MCP client over stdio
+  mindcli add "Idea for the search ranking"        # Capture text and index it
+  mindcli save https://example.com/article         # Save a URL without browser session state
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
   mindcli ask "what did I write about Go?"     # Ask a question
@@ -665,6 +678,255 @@ func runMCP() error {
 		return fmt.Errorf("running MCP server: %w", err)
 	}
 	return nil
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string { return strings.Join(*values, ",") }
+
+func (values *stringListFlag) Set(value string) error {
+	*values = append(*values, value)
+	return nil
+}
+
+func runAdd(args []string) error {
+	fs := flag.NewFlagSet("add", flag.ContinueOnError)
+	title := fs.String("title", "", "Capture title")
+	collection := fs.String("collection", "", "Collection to add the capture to")
+	sourceURL := fs.String("source-url", "", "Original source URL metadata")
+	useEditor := fs.Bool("editor", false, "Edit the capture with $VISUAL or $EDITOR")
+	var tags stringListFlag
+	fs.Var(&tags, "tag", "Tag to add (repeatable or comma-separated)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	content, err := captureInput(fs.Args(), *useEditor)
+	if err != nil {
+		return err
+	}
+	normalizedURL := ""
+	if strings.TrimSpace(*sourceURL) != "" {
+		normalizedURL = sources.NormalizeWebURL(*sourceURL)
+		if normalizedURL == "" {
+			return fmt.Errorf("invalid --source-url %q: use an HTTP or HTTPS URL", *sourceURL)
+		}
+	}
+
+	s, err := openStores(openOpts{})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	result, err := captureAndIndex(context.Background(), s, capture.Request{
+		Content: content, Title: *title, Tags: tags,
+		Collection: strings.TrimSpace(*collection), SourceURL: normalizedURL,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Duplicate {
+		fmt.Printf("Capture already exists: %s\n", result.Path)
+	} else {
+		fmt.Printf("Captured %q -> %s\n", result.Title, result.Path)
+	}
+	return nil
+}
+
+func runSave(args []string) error {
+	fs := flag.NewFlagSet("save", flag.ContinueOnError)
+	title := fs.String("title", "", "Saved page title")
+	collection := fs.String("collection", "", "Collection to add the page to")
+	var tags stringListFlag
+	fs.Var(&tags, "tag", "Tag to add (repeatable or comma-separated)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 1 {
+		return fmt.Errorf("usage: mindcli save [--title TITLE] [--tag TAG] [--collection NAME] URL")
+	}
+	normalizedURL := sources.NormalizeWebURL(fs.Args()[0])
+	if normalizedURL == "" {
+		return fmt.Errorf("invalid URL %q: use an HTTP or HTTPS URL", fs.Args()[0])
+	}
+
+	s, err := openStores(openOpts{})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	pageTitle := strings.TrimSpace(*title)
+	content := "[Open original page](" + normalizedURL + ")"
+	if s.cfg.Sources.Browser.IncludeContent {
+		page, fetchErr := sources.FetchReaderPage(context.Background(), normalizedURL, sources.BrowserOptions{
+			IncludeContent: true, AllowedDomains: s.cfg.Sources.Browser.AllowedDomains,
+			DeniedDomains:    s.cfg.Sources.Browser.DeniedDomains,
+			MaxResponseBytes: s.cfg.Sources.Browser.MaxResponseBytes,
+			RequestTimeout:   time.Duration(s.cfg.Sources.Browser.RequestTimeoutSeconds) * time.Second,
+			FetchConcurrency: s.cfg.Sources.Browser.FetchConcurrency,
+			MaxPages:         s.cfg.Sources.Browser.MaxPages, RetentionDays: s.cfg.Sources.Browser.RetentionDays,
+		})
+		if fetchErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: reader fetch failed; saving URL only: %v\n", fetchErr)
+		} else if strings.TrimSpace(page.Content) != "" {
+			content += "\n\n" + page.Content
+			if pageTitle == "" {
+				pageTitle = firstContentLine(page.Content)
+			}
+		}
+	}
+	if pageTitle == "" {
+		pageTitle = titleFromURL(normalizedURL)
+	}
+	result, err := captureAndIndex(context.Background(), s, capture.Request{
+		Content: content, Title: pageTitle, Tags: tags,
+		Collection: strings.TrimSpace(*collection), SourceURL: normalizedURL,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Duplicate {
+		fmt.Printf("URL already saved: %s\n", result.Path)
+	} else {
+		fmt.Printf("Saved %q -> %s\n", result.Title, result.Path)
+	}
+	return nil
+}
+
+func captureAndIndex(ctx context.Context, s *stores, request capture.Request) (capture.Result, error) {
+	result, err := (capture.Writer{Inbox: s.cfg.Capture.Inbox}).Write(ctx, request)
+	if err != nil {
+		return capture.Result{}, err
+	}
+	indexer := index.NewIndexer(s.db, s.bleve, nil, nil, s.cfg)
+	indexer.SetRedactor(buildRedactor(s.cfg), s.cfg.Privacy.RedactContent)
+	if err := indexer.IndexFile(ctx, result.Path); err != nil {
+		return result, fmt.Errorf("indexing capture: %w", err)
+	}
+	if request.Collection != "" {
+		doc, err := s.db.GetDocumentByPath(ctx, result.Path)
+		if err != nil {
+			return result, fmt.Errorf("loading indexed capture: %w", err)
+		}
+		collection, err := s.db.GetCollectionByName(ctx, request.Collection)
+		if err != nil {
+			if !errors.Is(err, storage.ErrNotFound) {
+				return result, fmt.Errorf("loading collection %q: %w", request.Collection, err)
+			}
+			collection = &storage.Collection{Name: request.Collection}
+			if createErr := s.db.CreateCollection(ctx, collection); errors.Is(createErr, storage.ErrCollectionExists) {
+				collection, err = s.db.GetCollectionByName(ctx, request.Collection)
+				if err != nil {
+					return result, fmt.Errorf("loading collection %q after concurrent creation: %w", request.Collection, err)
+				}
+			} else if createErr != nil {
+				return result, fmt.Errorf("creating collection %q: %w", request.Collection, createErr)
+			}
+		}
+		if err := s.db.AddToCollection(ctx, collection.ID, doc.ID); err != nil {
+			return result, fmt.Errorf("adding capture to collection %q: %w", request.Collection, err)
+		}
+	}
+	return result, nil
+}
+
+func captureInput(arguments []string, useEditor bool) (string, error) {
+	initial := strings.TrimSpace(strings.Join(arguments, " "))
+	if initial == "" {
+		info, err := os.Stdin.Stat()
+		if err != nil {
+			return "", fmt.Errorf("checking stdin: %w", err)
+		}
+		if info.Mode()&os.ModeCharDevice == 0 {
+			content, err := io.ReadAll(io.LimitReader(os.Stdin, capture.MaxCaptureBytes+1))
+			if err != nil {
+				return "", fmt.Errorf("reading stdin: %w", err)
+			}
+			if len(content) > capture.MaxCaptureBytes {
+				return "", fmt.Errorf("capture content exceeds %d bytes", capture.MaxCaptureBytes)
+			}
+			initial = string(content)
+		}
+	}
+	if useEditor {
+		return editCapture(initial)
+	}
+	if strings.TrimSpace(initial) == "" {
+		return "", fmt.Errorf("usage: mindcli add [--editor] [--title TITLE] [--tag TAG] [--collection NAME] TEXT (or pipe text on stdin)")
+	}
+	return initial, nil
+}
+
+func editCapture(initial string) (string, error) {
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("--editor requires $VISUAL or $EDITOR")
+	}
+	temporary, err := os.CreateTemp("", "mindcli-capture-*.md")
+	if err != nil {
+		return "", fmt.Errorf("creating editor file: %w", err)
+	}
+	path := temporary.Name()
+	defer func() { _ = os.Remove(path) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if _, err := temporary.WriteString(initial); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	command := exec.Command(parts[0], append(parts[1:], path)...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("running editor: %w", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading editor content: %w", err)
+	}
+	if len(content) > capture.MaxCaptureBytes {
+		return "", fmt.Errorf("capture content exceeds %d bytes", capture.MaxCaptureBytes)
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return "", fmt.Errorf("capture canceled: editor content is empty")
+	}
+	return string(content), nil
+}
+
+func firstContentLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 120 {
+			line = string(runes[:120])
+		}
+		return line
+	}
+	return ""
+}
+
+func titleFromURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	value := parsed.Hostname() + strings.TrimSuffix(parsed.EscapedPath(), "/")
+	if value == "" {
+		return raw
+	}
+	return value
 }
 
 func resolveRelatedDocument(ctx context.Context, db *storage.DB, documentID string, paths []string) (*storage.Document, error) {
