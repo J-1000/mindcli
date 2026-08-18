@@ -1152,6 +1152,23 @@ func runDoctor() error {
 	fmt.Printf("  provider:  %s\n", cfg.Embeddings.Provider)
 	fmt.Printf("  model:     %s\n", cfg.Embeddings.Model)
 	fmt.Printf("  llm_model: %s\n", cfg.Embeddings.LLMModel)
+	if cfg.Sources.Browser.Enabled {
+		browser := cfg.Sources.Browser
+		fmt.Printf("ok browser retention: %d days, at most %d pages per profile\n", browser.RetentionDays, browser.MaxPages)
+		if browser.IncludeContent {
+			domainPolicy := "all domains"
+			if len(browser.AllowedDomains) > 0 {
+				domainPolicy = fmt.Sprintf("%d allowed domain(s)", len(browser.AllowedDomains))
+			}
+			if len(browser.DeniedDomains) > 0 {
+				domainPolicy += fmt.Sprintf(", %d denied domain(s)", len(browser.DeniedDomains))
+			}
+			fmt.Printf("! browser page fetching enabled: %s; %d byte limit; %ds timeout; %d workers\n",
+				domainPolicy, browser.MaxResponseBytes, browser.RequestTimeoutSeconds, browser.FetchConcurrency)
+		} else {
+			fmt.Println("ok browser page fetching disabled (no page-content requests)")
+		}
+	}
 
 	ctx := context.Background()
 	switch cfg.Embeddings.Provider {
