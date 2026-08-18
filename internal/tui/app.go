@@ -57,9 +57,10 @@ type Model struct {
 	collectInput textinput.Model
 	redactor     privacy.Redactor
 
-	highlights    map[string][]string // matching snippets per document ID
-	searchVersion int                 // increments per keystroke for debouncing
-	sourceFilter  storage.Source      // active source filter ("" = all sources)
+	highlights     map[string][]string // matching snippets per document ID
+	relatedReasons map[string][]query.RelationReason
+	searchVersion  int            // increments per keystroke for debouncing
+	sourceFilter   storage.Source // active source filter ("" = all sources)
 
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
@@ -266,6 +267,11 @@ type collectionDocsLoadedMsg struct {
 	docs []*storage.Document
 }
 
+type relatedResultsMsg struct {
+	sourceTitle string
+	results     []query.RelatedResult
+}
+
 type streamChunkMsg struct {
 	token string
 	done  bool
@@ -346,6 +352,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case docsLoadedMsg:
 		m.results = msg.docs
 		m.highlights = nil
+		m.relatedReasons = nil
 		m.cursor = 0
 		m.statusMsg = fmt.Sprintf("%d documents", len(m.results))
 		m.statusIsErr = false
@@ -355,6 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchResultsMsg:
 		m.results = msg.docs
 		m.highlights = msg.highlights
+		m.relatedReasons = nil
 		m.cursor = 0
 		m.answerText = ""
 		status := fmt.Sprintf("%d results", len(m.results))
@@ -415,8 +423,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case collectionDocsLoadedMsg:
 		m.browsingCollections = false
 		m.results = msg.docs
+		m.relatedReasons = nil
 		m.cursor = 0
 		m.statusMsg = fmt.Sprintf("%d documents in collection", len(msg.docs))
+		m.statusIsErr = false
+		m.updatePreviewContent()
+		return m, nil
+
+	case relatedResultsMsg:
+		m.results = make([]*storage.Document, 0, len(msg.results))
+		m.relatedReasons = make(map[string][]query.RelationReason, len(msg.results))
+		for _, result := range msg.results {
+			m.results = append(m.results, result.Document)
+			m.relatedReasons[result.Document.ID] = result.Reasons
+		}
+		m.highlights = nil
+		m.answerText = ""
+		m.cursor = 0
+		m.statusMsg = fmt.Sprintf("%d documents related to %s", len(m.results), msg.sourceTitle)
 		m.statusIsErr = false
 		m.updatePreviewContent()
 		return m, nil
@@ -613,6 +637,9 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusIsErr = false
 		return m, m.loadDocuments()
 
+	case key.Matches(msg, m.keys.Related):
+		return m.startRelatedSearch()
+
 	case key.Matches(msg, m.keys.Index):
 		if m.reindex != nil && !m.indexing {
 			m.indexing = true
@@ -654,6 +681,27 @@ func (m *Model) startReindex() tea.Cmd {
 	return func() tea.Msg {
 		indexed, errs, err := reindex(context.Background())
 		return reindexDoneMsg{indexed: indexed, errs: errs, err: err}
+	}
+}
+
+func (m Model) startRelatedSearch() (Model, tea.Cmd) {
+	if m.cursor >= len(m.results) {
+		return m, nil
+	}
+	if m.hybrid == nil {
+		m.statusMsg = "Related search is unavailable"
+		m.statusIsErr = true
+		return m, nil
+	}
+	doc := m.results[m.cursor]
+	m.statusMsg = "Finding documents related to " + doc.Title + "..."
+	m.statusIsErr = false
+	return m, func() tea.Msg {
+		results, err := m.hybrid.Related(context.Background(), doc.ID, 50)
+		if err != nil {
+			return errMsg{err}
+		}
+		return relatedResultsMsg{sourceTitle: doc.Title, results: results}
 	}
 }
 
@@ -825,6 +873,8 @@ func (m Model) updatePreview(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.panel = PanelSearch
 		m.searchInput.Focus()
 		return m, nil
+	case key.Matches(msg, m.keys.Related):
+		return m.startRelatedSearch()
 	}
 
 	var cmd tea.Cmd
@@ -1015,6 +1065,13 @@ func (m *Model) updatePreviewContent() {
 	sb.WriteString("\n")
 	if tags := doc.TagsString(); tags != "" {
 		sb.WriteString("Tags: " + tags + "\n")
+	}
+	if reasons := m.relatedReasons[doc.ID]; len(reasons) > 0 {
+		labels := make([]string, 0, len(reasons))
+		for _, reason := range reasons {
+			labels = append(labels, m.redactor.Redact(reason.Label()))
+		}
+		sb.WriteString("Related: " + strings.Join(labels, "; ") + "\n")
 	}
 	// Show collection memberships.
 	if cols, err := m.db.GetDocumentCollections(context.Background(), doc.ID); err == nil && len(cols) > 0 {
@@ -1278,6 +1335,7 @@ func (m Model) renderHelp() string {
 		{"o", "Open in external app"},
 		{"y", "Copy path to clipboard"},
 		{"r", "Refresh list"},
+		{"R", "Find related documents"},
 		{"i", "Index sources now"},
 		{"f", "Cycle source filter"},
 		{"t", "Add tag"},
