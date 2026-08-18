@@ -242,6 +242,113 @@ func TestQuickCaptureFlow(t *testing.T) {
 	}
 }
 
+func TestSessionContextIsOrderedExcludedAndHistoryBounded(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	docs := map[string]*storage.Document{
+		"pin":     {ID: "pin", Title: "Pinned", Content: strings.Repeat("界", maxAnswerDocumentRunes+20)},
+		"include": {ID: "include", Title: "Included", Content: "included"},
+		"exclude": {ID: "exclude", Title: "Excluded", Content: "excluded"},
+		"search":  {ID: "search", Title: "Search", Content: "search"},
+	}
+	turns := make([]*storage.SessionTurn, 6)
+	for index := range turns {
+		turns[index] = &storage.SessionTurn{Question: "q" + string(rune('0'+index)), Answer: "answer"}
+	}
+	model.SetSession(&storage.ResearchSession{ID: "session", Name: "Research"}, turns, []*storage.SessionDocument{
+		{Document: docs["include"], State: storage.SessionDocumentIncluded},
+		{Document: docs["exclude"], State: storage.SessionDocumentExcluded},
+		{Document: docs["pin"], State: storage.SessionDocumentPinned},
+	})
+	if len(model.conversation) != maxConversationTurns || model.conversation[0].Question != "q2" {
+		t.Fatalf("bounded resumed conversation = %+v", model.conversation)
+	}
+	candidates := model.answerCandidates([]*storage.Document{docs["exclude"], docs["search"], docs["include"]})
+	if len(candidates) != 3 || candidates[0].ID != "pin" || candidates[1].ID != "include" || candidates[2].ID != "search" {
+		t.Fatalf("session answer candidates = %+v", candidates)
+	}
+	contexts := buildAnswerContexts(candidates)
+	if len([]rune(contexts[0])) != maxAnswerDocumentRunes || !strings.HasSuffix(contexts[0], "界") {
+		t.Fatalf("unicode context length = %d", len([]rune(contexts[0])))
+	}
+	model.width, model.height = 120, 40
+	if view := model.View(); !strings.Contains(view, "session: Research") {
+		t.Fatalf("session identity missing from TUI:\n%s", view)
+	}
+}
+
+func TestSessionKeysPersistDocumentStateAndTurnCitations(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	doc := &storage.Document{ID: "source", Source: storage.SourceMarkdown, Path: "/source.md", Title: "Source", Content: "text", ContentHash: "hash", IndexedAt: now, ModifiedAt: now}
+	if err := db.InsertDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	session := &storage.ResearchSession{Name: "Research"}
+	if err := db.CreateSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.SetSession(session, nil, nil)
+	model.width, model.height = 120, 40
+	model.updateViewportSize()
+	model.panel = PanelResults
+	model.results = []*storage.Document{doc}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = updated.(Model)
+	stored, err := db.ListSessionDocuments(ctx, session.ID)
+	if err != nil || len(stored) != 1 || stored[0].State != storage.SessionDocumentPinned {
+		t.Fatalf("pinned session documents = %+v, err=%v", stored, err)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	model = updated.(Model)
+	if model.sessionStates[doc.ID] != storage.SessionDocumentExcluded || !strings.Contains(model.preview.View(), "Session context: excluded") {
+		t.Fatalf("excluded session state = %q, preview=%q", model.sessionStates[doc.ID], model.preview.View())
+	}
+
+	model.currentQuestion = "Question"
+	model.answerText = "Generated answer [1]"
+	model.currentSources = []*storage.Document{doc}
+	if err := model.recordConversationTurn(); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := db.ListSessionTurns(ctx, session.ID)
+	if err != nil || len(turns) != 1 || len(turns[0].Citations) != 1 || turns[0].Citations[0].DocumentID != doc.ID {
+		t.Fatalf("persisted session turns = %+v, err=%v", turns, err)
+	}
+	model.contextTotal = 8
+	model.showAnswer()
+	if preview := model.preview.View(); !strings.Contains(preview, "Context: 1/8") || !strings.Contains(preview, "History: 1/1") {
+		t.Fatalf("visible context bounds missing: %q", preview)
+	}
+}
+
+func TestEphemeralConversationIsNotPersisted(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.currentQuestion = "Question"
+	model.answerText = "Answer"
+	if err := model.recordConversationTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.conversation) != 1 {
+		t.Fatalf("ephemeral conversation = %+v", model.conversation)
+	}
+	model.resetEphemeralConversation()
+	if len(model.conversation) != 0 {
+		t.Fatalf("ephemeral conversation was not cleared: %+v", model.conversation)
+	}
+	sessions, err := db.ListSessions(context.Background())
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("ephemeral conversation persisted sessions = %+v, err=%v", sessions, err)
+	}
+}
+
 func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
