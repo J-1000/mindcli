@@ -130,24 +130,30 @@ func (p *PDFSource) Parse(ctx context.Context, file FileInfo) (*storage.Document
 
 	if visibleCharacterCount(content) < p.ocr.MinTextChars {
 		if !p.ocr.Enabled {
-			return nil, fmt.Errorf("PDF contains too little extractable text (%d characters); enable sources.pdf.ocr_enabled for local OCR", visibleCharacterCount(content))
-		}
-		ocrPages, truncated, ocrErr := p.extractPDFOCR(ctx, file.Path, len(pages))
-		if ocrErr != nil {
-			return nil, fmt.Errorf("OCR fallback: %w", ocrErr)
-		}
-		content = formatPDFPages(ocrPages)
-		if visibleCharacterCount(content) == 0 {
-			return nil, fmt.Errorf("OCR produced no readable text")
-		}
-		metadata["extraction_method"] = "ocr_tesseract"
-		metadata["confidence"] = "low"
-		metadata["ocr_pages"] = strconv.Itoa(len(ocrPages))
-		metadata["ocr_languages"] = strings.Join(p.ocr.Languages, "+")
-		metadata["location"] = pdfPageRange(len(ocrPages))
-		if truncated {
-			metadata["ocr_truncated"] = "true"
-			metadata["extraction_warning"] = fmt.Sprintf("OCR limited to the first %d of %d pages", len(ocrPages), len(pages))
+			metadata["confidence"] = "low"
+			metadata["extraction_warning"] = fmt.Sprintf(
+				"only %d extractable characters; local OCR is disabled",
+				visibleCharacterCount(content),
+			)
+			metadata["ocr_available"] = "enable sources.pdf.ocr_enabled"
+		} else {
+			ocrPages, truncated, ocrErr := p.extractPDFOCR(ctx, file.Path, len(pages))
+			if ocrErr != nil {
+				return nil, fmt.Errorf("OCR fallback: %w", ocrErr)
+			}
+			content = formatPDFPages(ocrPages)
+			if visibleCharacterCount(content) == 0 {
+				return nil, fmt.Errorf("OCR produced no readable text")
+			}
+			metadata["extraction_method"] = "ocr_tesseract"
+			metadata["confidence"] = "low"
+			metadata["ocr_pages"] = strconv.Itoa(len(ocrPages))
+			metadata["ocr_languages"] = strings.Join(p.ocr.Languages, "+")
+			metadata["location"] = pdfPageRange(len(ocrPages))
+			if truncated {
+				metadata["ocr_truncated"] = "true"
+				metadata["extraction_warning"] = fmt.Sprintf("OCR limited to the first %d of %d pages", len(ocrPages), len(pages))
+			}
 		}
 	}
 
