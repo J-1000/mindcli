@@ -73,10 +73,20 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 
 	// Add PDF source if enabled
 	if cfg.Sources.PDF.Enabled {
-		srcs = append(srcs, sources.NewPDFSource(
+		pdfSource := sources.NewPDFSource(
 			cfg.Sources.PDF.Paths,
 			[]string{".git", "node_modules"},
-		))
+		)
+		pdfSource.SetOCROptions(sources.PDFOCROptions{
+			Enabled:      cfg.Sources.PDF.OCREnabled,
+			Command:      cfg.Sources.PDF.OCRCommand,
+			Renderer:     cfg.Sources.PDF.OCRRenderer,
+			Languages:    cfg.Sources.PDF.OCRLanguages,
+			MaxPages:     cfg.Sources.PDF.OCRMaxPages,
+			Timeout:      time.Duration(cfg.Sources.PDF.OCRTimeoutSeconds) * time.Second,
+			MinTextChars: cfg.Sources.PDF.OCRMinTextChars,
+		})
+		srcs = append(srcs, pdfSource)
 	}
 
 	if cfg.Sources.HTML.Enabled {

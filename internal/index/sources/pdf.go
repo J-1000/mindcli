@@ -6,9 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/J-1000/mindcli/internal/storage"
 	"github.com/ledongthuc/pdf"
@@ -17,6 +21,34 @@ import (
 // PDFSource indexes PDF files.
 type PDFSource struct {
 	scanner *Scanner
+	ocr     PDFOCROptions
+}
+
+// PDFOCROptions configures the optional local OCR fallback. OCR is only used
+// when ordinary PDF extraction yields fewer than MinTextChars visible chars.
+type PDFOCROptions struct {
+	Enabled       bool
+	Command       string
+	Renderer      string
+	Languages     []string
+	MaxPages      int
+	Timeout       time.Duration
+	MinTextChars  int
+	RenderDPI     int
+	MaxRenderedMB int64
+}
+
+func DefaultPDFOCROptions() PDFOCROptions {
+	return PDFOCROptions{
+		Command:       "tesseract",
+		Renderer:      "pdftoppm",
+		Languages:     []string{"eng"},
+		MaxPages:      25,
+		Timeout:       2 * time.Minute,
+		MinTextChars:  80,
+		RenderDPI:     200,
+		MaxRenderedMB: 32,
+	}
 }
 
 // NewPDFSource creates a new PDF source.
@@ -27,7 +59,38 @@ func NewPDFSource(paths, ignore []string) *PDFSource {
 			Extensions: []string{".pdf"},
 			Ignore:     ignore,
 		}),
+		ocr: DefaultPDFOCROptions(),
 	}
+}
+
+// SetOCROptions enables or tunes the local OCR fallback.
+func (p *PDFSource) SetOCROptions(options PDFOCROptions) {
+	defaults := DefaultPDFOCROptions()
+	if strings.TrimSpace(options.Command) == "" {
+		options.Command = defaults.Command
+	}
+	if strings.TrimSpace(options.Renderer) == "" {
+		options.Renderer = defaults.Renderer
+	}
+	if len(options.Languages) == 0 {
+		options.Languages = defaults.Languages
+	}
+	if options.MaxPages < 1 {
+		options.MaxPages = defaults.MaxPages
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = defaults.Timeout
+	}
+	if options.MinTextChars < 0 {
+		options.MinTextChars = defaults.MinTextChars
+	}
+	if options.RenderDPI < 1 {
+		options.RenderDPI = defaults.RenderDPI
+	}
+	if options.MaxRenderedMB < 1 {
+		options.MaxRenderedMB = defaults.MaxRenderedMB
+	}
+	p.ocr = options
 }
 
 // Name returns the source name.
@@ -47,9 +110,45 @@ func (p *PDFSource) MatchesPath(path string) bool {
 
 // Parse reads a PDF file and returns the parsed document.
 func (p *PDFSource) Parse(ctx context.Context, file FileInfo) (*storage.Document, error) {
-	content, err := extractPDFText(file.Path)
+	pages, failedPages, err := extractPDFPages(file.Path)
 	if err != nil {
 		return nil, fmt.Errorf("extracting PDF text: %w", err)
+	}
+	content := formatPDFPages(pages)
+	metadata := map[string]string{
+		"format":            "pdf",
+		"original_path":     file.Path,
+		"page_count":        strconv.Itoa(len(pages)),
+		"location":          pdfPageRange(len(pages)),
+		"extraction_method": "pdf_text",
+		"confidence":        "high",
+	}
+	if len(failedPages) > 0 {
+		metadata["failed_pages"] = joinPageNumbers(failedPages)
+		metadata["extraction_warning"] = fmt.Sprintf("plain-text extraction failed on %d page(s)", len(failedPages))
+	}
+
+	if visibleCharacterCount(content) < p.ocr.MinTextChars {
+		if !p.ocr.Enabled {
+			return nil, fmt.Errorf("PDF contains too little extractable text (%d characters); enable sources.pdf.ocr_enabled for local OCR", visibleCharacterCount(content))
+		}
+		ocrPages, truncated, ocrErr := p.extractPDFOCR(ctx, file.Path, len(pages))
+		if ocrErr != nil {
+			return nil, fmt.Errorf("OCR fallback: %w", ocrErr)
+		}
+		content = formatPDFPages(ocrPages)
+		if visibleCharacterCount(content) == 0 {
+			return nil, fmt.Errorf("OCR produced no readable text")
+		}
+		metadata["extraction_method"] = "ocr_tesseract"
+		metadata["confidence"] = "low"
+		metadata["ocr_pages"] = strconv.Itoa(len(ocrPages))
+		metadata["ocr_languages"] = strings.Join(p.ocr.Languages, "+")
+		metadata["location"] = pdfPageRange(len(ocrPages))
+		if truncated {
+			metadata["ocr_truncated"] = "true"
+			metadata["extraction_warning"] = fmt.Sprintf("OCR limited to the first %d of %d pages", len(ocrPages), len(pages))
+		}
 	}
 
 	// Generate stable ID from path.
@@ -81,6 +180,7 @@ func (p *PDFSource) Parse(ctx context.Context, file FileInfo) (*storage.Document
 		Title:       title,
 		Content:     content,
 		Preview:     preview,
+		Metadata:    metadata,
 		ContentHash: hex.EncodeToString(contentHash[:]),
 		IndexedAt:   time.Now(),
 		ModifiedAt:  modTime,
@@ -89,33 +189,161 @@ func (p *PDFSource) Parse(ctx context.Context, file FileInfo) (*storage.Document
 
 // extractPDFText extracts plain text from a PDF file.
 func extractPDFText(path string) (string, error) {
+	pages, _, err := extractPDFPages(path)
+	if err != nil {
+		return "", err
+	}
+	return formatPDFPages(pages), nil
+}
+
+// extractPDFPages preserves page boundaries and reports pages that the PDF
+// library could not decode instead of silently discarding them.
+func extractPDFPages(path string) ([]string, []int, error) {
 	f, r, err := pdf.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("opening PDF: %w", err)
+		return nil, nil, fmt.Errorf("opening PDF: %w", err)
 	}
-	var sb strings.Builder
 	numPages := r.NumPage()
+	pages := make([]string, numPages)
+	var failed []int
 
 	for i := 1; i <= numPages; i++ {
 		page := r.Page(i)
 		if page.V.IsNull() {
+			failed = append(failed, i)
 			continue
 		}
 
 		text, err := page.GetPlainText(nil)
 		if err != nil {
-			continue // Skip pages that fail to parse.
+			failed = append(failed, i)
+			continue
 		}
-		sb.WriteString(text)
-		if i < numPages {
-			sb.WriteString("\n\n")
-		}
+		pages[i-1] = strings.TrimSpace(text)
 	}
 	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("closing PDF: %w", err)
+		return nil, nil, fmt.Errorf("closing PDF: %w", err)
 	}
 
-	return strings.TrimSpace(sb.String()), nil
+	return pages, failed, nil
+}
+
+func (p *PDFSource) extractPDFOCR(ctx context.Context, path string, pageCount int) ([]string, bool, error) {
+	ocrCommand, err := execLookPath(p.ocr.Command)
+	if err != nil {
+		return nil, false, fmt.Errorf("OCR command %q not found", p.ocr.Command)
+	}
+	renderer, err := execLookPath(p.ocr.Renderer)
+	if err != nil {
+		return nil, false, fmt.Errorf("PDF renderer %q not found", p.ocr.Renderer)
+	}
+	maxPages := p.ocr.MaxPages
+	if pageCount > 0 && maxPages > pageCount {
+		maxPages = pageCount
+	}
+	timedCtx, cancel := context.WithTimeout(ctx, p.ocr.Timeout)
+	defer cancel()
+	tempDir, err := os.MkdirTemp("", "mindcli-ocr-")
+	if err != nil {
+		return nil, false, fmt.Errorf("creating private temporary directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	prefix := filepath.Join(tempDir, "page")
+	args := []string{"-f", "1", "-l", strconv.Itoa(maxPages), "-r", strconv.Itoa(p.ocr.RenderDPI), "-png", path, prefix}
+	if output, runErr := runCommand(timedCtx, renderer, args...); runErr != nil {
+		return nil, false, fmt.Errorf("rendering PDF pages: %w: %s", runErr, truncateCommandOutput(output))
+	}
+	images, err := filepath.Glob(prefix + "-*.png")
+	if err != nil {
+		return nil, false, err
+	}
+	sort.Strings(images)
+	if len(images) == 0 {
+		return nil, false, fmt.Errorf("renderer produced no page images")
+	}
+	if len(images) > maxPages {
+		images = images[:maxPages]
+	}
+	var renderedBytes int64
+	for _, imagePath := range images {
+		info, statErr := os.Stat(imagePath)
+		if statErr != nil {
+			return nil, false, statErr
+		}
+		renderedBytes += info.Size()
+		if renderedBytes > int64(maxPages)*p.ocr.MaxRenderedMB<<20 {
+			return nil, false, fmt.Errorf("rendered page images exceed %d MiB limit", int64(maxPages)*p.ocr.MaxRenderedMB)
+		}
+	}
+
+	language := strings.Join(p.ocr.Languages, "+")
+	pages := make([]string, 0, len(images))
+	for index, imagePath := range images {
+		args := []string{imagePath, "stdout"}
+		if language != "" {
+			args = append(args, "-l", language)
+		}
+		output, runErr := runCommand(timedCtx, ocrCommand, args...)
+		if runErr != nil {
+			return nil, false, fmt.Errorf("recognizing page %d: %w: %s", index+1, runErr, truncateCommandOutput(output))
+		}
+		pages = append(pages, strings.TrimSpace(string(output)))
+	}
+	return pages, pageCount > len(pages), nil
+}
+
+var execLookPath = exec.LookPath
+
+var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func formatPDFPages(pages []string) string {
+	var content strings.Builder
+	for index, page := range pages {
+		if strings.TrimSpace(page) == "" {
+			continue
+		}
+		if content.Len() > 0 {
+			content.WriteString("\n\n")
+		}
+		fmt.Fprintf(&content, "## Page %d\n\n%s", index+1, strings.TrimSpace(page))
+	}
+	return strings.TrimSpace(content.String())
+}
+
+func visibleCharacterCount(value string) int {
+	count := 0
+	for _, char := range value {
+		if !unicode.IsSpace(char) && !unicode.IsPunct(char) {
+			count++
+		}
+	}
+	return count
+}
+
+func pdfPageRange(count int) string {
+	if count < 1 {
+		return "pages:none"
+	}
+	return fmt.Sprintf("pages:1-%d", count)
+}
+
+func joinPageNumbers(pages []int) string {
+	values := make([]string, len(pages))
+	for index, page := range pages {
+		values[index] = strconv.Itoa(page)
+	}
+	return strings.Join(values, ",")
+}
+
+func truncateCommandOutput(output []byte) string {
+	const max = 1000
+	value := strings.TrimSpace(string(output))
+	if len(value) > max {
+		value = value[:max] + "..."
+	}
+	return value
 }
 
 // generatePreview creates a truncated preview of the content.
