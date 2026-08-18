@@ -43,15 +43,20 @@ also remain as cleartext Markdown source files in the configured inbox.
 
 ## Redaction
 
-Redaction has two layers, controlled by `privacy.redact_patterns`:
+Redaction has two layers, controlled by `privacy.redact_patterns`, which is
+empty by default:
 
 - **Display-time (default):** matches are replaced with `[REDACTED]` in search
-  output, exports, generated answers, and every MCP tool result. The underlying
-  stored content is **not** changed.
+  output, generated answers, session output, digests, and every MCP tool result.
+  Standard search exports are narrower: JSON and Markdown redact only document
+  previews; CSV contains no preview and does not apply the redactor. Exported
+  titles, paths, tags, source labels, timestamps, and JSON metadata remain
+  unchanged. The underlying stored content is **not** changed.
 - **Index-time (opt-in):** set `privacy.redact_content: true` to apply the same
   patterns to document content and previews **before** they are written to
-  SQLite and the search index. Secrets matching your patterns are then never
-  stored. Trade-off: the original text is unrecoverable and not searchable.
+  SQLite and the search index. Matching text in those fields is then never
+  stored. Titles, paths, tags, and metadata are not covered. Trade-off: the
+  redacted original text is unrecoverable and not searchable.
 
 ```yaml
 privacy:

@@ -292,10 +292,7 @@ storage:
 
 privacy:
   redact_content: false   # true also redacts stored content/preview at index time
-  redact_patterns:
-    - (?i)api[_-]?key\s*[:=]\s*[A-Za-z0-9_-]{16,}
-    - (?i)secret\s*[:=]\s*[A-Za-z0-9_-]{16,}
-    - \b[0-9]{16}\b
+  redact_patterns: []     # empty by default; add patterns for sensitive text
 ```
 
 ## Extended local formats and OCR
@@ -356,10 +353,15 @@ There is no telemetry. With the default `ollama` provider, indexed content,
 embeddings, and generated answers stay on your machine. If you switch
 `embeddings.provider` to `openai`, document chunks and questions are sent to the
 configured OpenAI-compatible API. By default indexed content is stored in
-cleartext under the data directory, and `redact_patterns` applies at display
-time only. Set `privacy.redact_content: true` to redact content before it is
-stored. See [PRIVACY.md](PRIVACY.md) for the full threat model,
-source-specific controls, and at-rest-encryption guidance.
+cleartext under the data directory and `redact_patterns` is empty. Configured
+patterns redact matching text in supported display surfaces, but standard
+exports are field-specific: JSON and Markdown redact previews only, while CSV
+contains no preview and does not apply the redactor. Titles, paths, tags,
+source labels, and JSON metadata are exported unchanged. Set
+`privacy.redact_content: true` to redact document content and previews before
+they are stored; it does not redact those other fields. See
+[PRIVACY.md](PRIVACY.md) for the full threat model, source-specific controls,
+and at-rest-encryption guidance.
 
 ## Persistent research sessions
 
