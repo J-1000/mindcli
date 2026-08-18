@@ -36,9 +36,10 @@ TUI's follow-up history remains memory-only.
 Collection activity metadata is stored in the same database: the last-viewed
 timestamp and document IDs previously observed in smart-collection result sets.
 
-So a note, PDF, email, browser title, fetched browser page, capture, or clipboard
-entry that you index is searchable in cleartext on disk. Captures also remain
-as cleartext Markdown source files in the configured inbox.
+So a note, PDF/OCR result, HTML archive, DOCX, EPUB chapter, Org section, source
+file, email/attachment, browser title, fetched browser page, capture, or
+clipboard entry that you index is searchable in cleartext on disk. Captures
+also remain as cleartext Markdown source files in the configured inbox.
 
 ## Redaction
 
@@ -65,7 +66,36 @@ privacy:
 
 - **Email:** with `sources.email.mask_sensitive_preview: true`, email addresses,
   bearer tokens, API-key-like strings, and long numbers are masked in **both**
-  the preview and the stored body.
+  the preview and the stored body. Attachment extraction is disabled unless
+  `extract_attachments` is true. When enabled, supported attachments are MIME
+  decoded locally and stored as separate searchable child documents. Their
+  filenames, content types, extraction status, and owning email path are stored
+  as metadata. `max_attachment_bytes`, `max_decompressed_bytes`, and
+  `max_archive_depth` bound individual input, aggregate expansion, and nested
+  containers. Temporary attachment files use private permissions and are
+  removed after parsing; process interruption can still leave operating-system
+  temporary data until normal cleanup.
+- **Local document archives:** HTML/webarchive, DOCX, EPUB, and Org sources are
+  disabled by default. They read only explicitly configured paths. File and
+  decompression budgets are enforced; ZIP-backed formats are parsed in memory
+  without extracting archive paths onto the filesystem. Extracted text is
+  lossy: page styling, images, embedded objects, and unsupported markup are not
+  silently represented as original source content. Extraction method and
+  section/location metadata remain attached to each document.
+- **PDF OCR:** OCR is disabled by default and ordinary low-text extraction is
+  marked with a warning. Enabling it executes the configured local renderer
+  and Tesseract binaries with the source PDF path. Rendered page images live in
+  a private temporary directory and are removed best-effort after the bounded,
+  timed operation. OCR text is explicitly marked low-confidence with page and
+  truncation metadata. MindCLI itself makes no OCR network request, but you are
+  responsible for the behavior and provenance of replacement command paths.
+- **Code repositories:** code ingestion is disabled by default, reads only
+  configured roots, does not follow symbolic links, and bounds both file size
+  and file count. Default ignores cover common VCS, dependency, editor, build,
+  `.env`, and minified-asset paths. Review custom roots and ignores carefully:
+  source code commonly contains credentials that do not match simple filename
+  rules. If a remote embedding provider is configured, indexed code chunks are
+  sent to it just like other document text.
 - **Clipboard:** with `sources.clipboard.skip_passwords: true`, entries that look
   like passwords are not indexed; `retention_days` bounds how long clipboard
   history is kept (`mindcli clipboard cleanup`).

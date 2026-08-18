@@ -358,10 +358,13 @@ Each profile should have separate:
 - Add work/personal profiles.
 - Add collection change tracking and on-demand digests.
 
-### Later Releases
+### Release 4: Local Format Coverage
 
 - Add selected document formats.
 - Add PDF OCR and email attachment extraction.
+
+### Later Releases
+
 - Consider authenticated remote access only after permissions, audit logging,
   and the privacy model are designed.
 
@@ -394,4 +397,3 @@ repository's `AGENTS.md` policy. A typical feature should be ordered as:
 
 Avoid combining an architectural refactor, user-visible behavior, and broad
 test changes in one commit unless they are genuinely inseparable.
-

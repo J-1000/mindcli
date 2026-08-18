@@ -2,14 +2,16 @@
 
 A fast, private TUI for personal knowledge management with AI-powered search.
 
-Search across your notes, PDFs, emails, browser history, and clipboard from a
-single keyboard-driven interface. The default Ollama setup runs locally; the
-optional OpenAI provider sends document chunks and questions to the configured
+Search across notes, PDFs, office documents, ebooks, web archives, Org files,
+code repositories, emails, browser history, and clipboard from a single
+keyboard-driven interface. The default Ollama setup runs locally; the optional
+OpenAI provider sends document chunks and questions to the configured
 OpenAI-compatible API.
 
 ## Features
 
-- **Multi-source indexing** — Markdown notes, PDFs, emails (mbox/maildir/emlx), individual browser pages (Chrome/Firefox/Safari), clipboard
+- **Multi-source indexing** — Markdown, page-aware PDFs, HTML/web archives, DOCX, EPUB chapters, Org sections, code repositories, email/attachments, individual browser pages, and clipboard
+- **Optional local OCR** — Discoverable Tesseract + Poppler fallback for image-only PDFs, disabled by default
 - **Hybrid search** — BM25 full-text search + semantic vector search with Reciprocal Rank Fusion
 - **Local AI by default** — Embeddings and streaming LLM answers via Ollama, with optional OpenAI provider
 - **Conversational follow-ups** — Ask a question, then follow up ("tell me more") with prior turns kept in context
@@ -37,7 +39,9 @@ mkdir -p ~/.local/bin
 install -m 0755 bin/mindcli ~/.local/bin/mindcli
 ```
 
-**Requirements:** Go 1.25.13+ and CGO enabled (for SQLite). Optional: [Ollama](https://ollama.ai) for semantic search and LLM features.
+**Requirements:** Go 1.25.13+ and CGO enabled (for SQLite). Optional:
+[Ollama](https://ollama.ai) for semantic search and LLM features; Tesseract and
+Poppler's `pdftoppm` for explicitly enabled PDF OCR.
 
 Release binaries and a Homebrew formula are not published yet. Until the first
 release exists, use the source build above.
@@ -152,8 +156,10 @@ Environment variables can override config values at runtime:
 - Indexing/search: `MINDCLI_INDEXING_WORKERS`, `MINDCLI_INDEXING_WATCH`, `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
 - Embeddings/LLM: `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
 - Markdown: `MINDCLI_SOURCES_MARKDOWN_ENABLED`, `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_MARKDOWN_EXTENSIONS`, `MINDCLI_SOURCES_MARKDOWN_IGNORE`
-- PDF: `MINDCLI_SOURCES_PDF_ENABLED`, `MINDCLI_SOURCES_PDF_PATHS`
-- Email: `MINDCLI_SOURCES_EMAIL_ENABLED`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_FORMATS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`
+- PDF: `MINDCLI_SOURCES_PDF_ENABLED`, `MINDCLI_SOURCES_PDF_PATHS`, plus `MINDCLI_SOURCES_PDF_OCR_ENABLED`, `MINDCLI_SOURCES_PDF_OCR_COMMAND`, `MINDCLI_SOURCES_PDF_OCR_RENDERER`, `MINDCLI_SOURCES_PDF_OCR_LANGUAGES`, `MINDCLI_SOURCES_PDF_OCR_MAX_PAGES`, `MINDCLI_SOURCES_PDF_OCR_TIMEOUT_SECONDS`, `MINDCLI_SOURCES_PDF_OCR_MIN_TEXT_CHARS`
+- Email: `MINDCLI_SOURCES_EMAIL_ENABLED`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_FORMATS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`, `MINDCLI_SOURCES_EMAIL_EXTRACT_ATTACHMENTS`, `MINDCLI_SOURCES_EMAIL_MAX_ATTACHMENT_BYTES`, `MINDCLI_SOURCES_EMAIL_MAX_DECOMPRESSED_BYTES`, `MINDCLI_SOURCES_EMAIL_MAX_ARCHIVE_DEPTH`
+- HTML/DOCX/EPUB/Org: `MINDCLI_SOURCES_FORMAT_ENABLED`, `MINDCLI_SOURCES_FORMAT_PATHS`, `MINDCLI_SOURCES_FORMAT_IGNORE`, `MINDCLI_SOURCES_FORMAT_MAX_FILE_BYTES`, `MINDCLI_SOURCES_FORMAT_MAX_DECOMPRESSED_BYTES` (replace `FORMAT` with `HTML`, `DOCX`, `EPUB`, or `ORG`)
+- Code: `MINDCLI_SOURCES_CODE_ENABLED`, `MINDCLI_SOURCES_CODE_PATHS`, `MINDCLI_SOURCES_CODE_IGNORE`, `MINDCLI_SOURCES_CODE_MAX_FILE_BYTES`, `MINDCLI_SOURCES_CODE_MAX_FILES`
 - Browser: `MINDCLI_SOURCES_BROWSER_ENABLED`, `MINDCLI_SOURCES_BROWSER_BROWSERS`, `MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT`, `MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_DENIED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES`, `MINDCLI_SOURCES_BROWSER_REQUEST_TIMEOUT_SECONDS`, `MINDCLI_SOURCES_BROWSER_FETCH_CONCURRENCY`, `MINDCLI_SOURCES_BROWSER_MAX_PAGES`, `MINDCLI_SOURCES_BROWSER_RETENTION_DAYS`
 - Clipboard: `MINDCLI_SOURCES_CLIPBOARD_ENABLED`, `MINDCLI_SOURCES_CLIPBOARD_RETENTION_DAYS`, `MINDCLI_SOURCES_CLIPBOARD_SKIP_PASSWORDS`
 - Capture: `MINDCLI_CAPTURE_INBOX`
@@ -172,6 +178,14 @@ sources:
     enabled: true
     paths:
       - ~/Documents
+    # OCR is a local, optional fallback for low/no-text PDFs.
+    ocr_enabled: false
+    ocr_command: tesseract
+    ocr_renderer: pdftoppm
+    ocr_languages: ["eng"]
+    ocr_max_pages: 25
+    ocr_timeout_seconds: 120
+    ocr_min_text_chars: 80
 
   email:
     enabled: false
@@ -179,6 +193,47 @@ sources:
     formats: ["mbox", "maildir"] # .eml/.emlx files are also detected
     ignore: []
     mask_sensitive_preview: true
+    extract_attachments: false
+    max_attachment_bytes: 16777216
+    max_decompressed_bytes: 67108864
+    max_archive_depth: 1
+
+  # Additional file sources are opt-in. max_decompressed_bytes is the archive
+  # expansion budget; Org uses the same shared bounded-source shape.
+  html:
+    enabled: false
+    paths: []
+    ignore: [".git", "node_modules"]
+    max_file_bytes: 16777216
+    max_decompressed_bytes: 33554432
+
+  docx:
+    enabled: false
+    paths: []
+    ignore: [".git", "node_modules"]
+    max_file_bytes: 67108864
+    max_decompressed_bytes: 134217728
+
+  epub:
+    enabled: false
+    paths: []
+    ignore: [".git", "node_modules"]
+    max_file_bytes: 67108864
+    max_decompressed_bytes: 134217728
+
+  org:
+    enabled: false
+    paths: []
+    ignore: [".git", "node_modules"]
+    max_file_bytes: 16777216
+    max_decompressed_bytes: 16777216
+
+  code:
+    enabled: false
+    paths: []
+    ignore: [".git", ".hg", ".svn", "node_modules", "vendor", "dist", "build", ".idea", ".vscode"]
+    max_file_bytes: 1048576
+    max_files: 20000
 
   browser:
     enabled: true
@@ -231,6 +286,38 @@ privacy:
     - (?i)secret\s*[:=]\s*[A-Za-z0-9_-]{16,}
     - \b[0-9]{16}\b
 ```
+
+## Extended local formats and OCR
+
+HTML (`.html`, `.htm`), MHTML (`.mhtml`, `.mht`), Safari `.webarchive`, DOCX,
+EPUB, and Org-mode sources are disabled until paths are configured. EPUB spine
+items and top-level Org sections become independent searchable documents with
+stable IDs; their metadata retains the original openable file, format,
+section/location, and extraction method. DOCX and saved-archive parsing is
+plain-text extraction, so unsupported layout, styling, images, or embedded
+objects are not presented as source text. File and archive-expansion limits are
+enforced before content is indexed.
+
+PDF extraction records page boundaries as `## Page N` and exposes page counts,
+method, and confidence metadata. When a PDF has little embedded text and OCR is
+off, the low-confidence result retains an explicit extraction warning. Setting
+`sources.pdf.ocr_enabled: true` runs the configured local `pdftoppm` renderer
+and Tesseract command for at most `ocr_max_pages` within the configured timeout.
+OCR output is labeled `ocr_tesseract` with low confidence and reports
+truncation. `mindcli doctor` shows whether both optional commands are available.
+
+Email attachment extraction is also opt-in. Supported textual attachments are
+HTML/web archives, DOCX, EPUB, Org, Markdown/plain structured text, and PDFs.
+Each extracted attachment becomes a child document citing the owning email;
+failures and skipped limits remain visible on the email metadata. Per-file,
+total expansion, and archive-depth bounds apply.
+
+Code indexing recognizes common source/configuration languages, skips symbolic
+links, secret-like `.env` files, minified JS/CSS, and configured dependency or
+build directories. It stores repository-relative paths and language metadata.
+Semantic indexing chunks at functions/types and then at line boundaries for
+oversized declarations. `source:html`, `source:docx`, `source:epub`,
+`source:org`, and `source:code` work anywhere structured filters are accepted.
 
 ## Quick capture and inbox
 
