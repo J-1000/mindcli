@@ -23,6 +23,35 @@ func (d *DB) CountCollectionDocumentsAddedAfter(ctx context.Context, collectionI
 	return count, nil
 }
 
+// ListCollectionDocumentIDsAddedAfter returns manual memberships created in a
+// time range, newest first. A zero boundary returns every current member.
+func (d *DB) ListCollectionDocumentIDsAddedAfter(ctx context.Context, collectionID string, after time.Time) ([]string, error) {
+	query := `SELECT document_id FROM collection_documents WHERE collection_id = ?`
+	args := []any{strings.TrimSpace(collectionID)}
+	if !after.IsZero() {
+		query += ` AND added_at >= ?`
+		args = append(args, after.UTC())
+	}
+	query += ` ORDER BY added_at DESC`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing new collection documents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning new collection document: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating new collection documents: %w", err)
+	}
+	return ids, nil
+}
+
 // FilterUnseenCollectionDocumentIDs returns current smart-query members that
 // have not been recorded by a previous collection view.
 func (d *DB) FilterUnseenCollectionDocumentIDs(ctx context.Context, collectionID string, currentIDs []string) ([]string, error) {
