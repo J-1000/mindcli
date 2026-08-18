@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -30,6 +31,33 @@ func TestVectorStoreDimMismatch(t *testing.T) {
 	}
 	if err := store.AddBatch([]string{"c"}, [][]float32{{1, 0, 0, 0}}); err == nil {
 		t.Error("expected AddBatch dimension-mismatch error, got nil")
+	}
+	if got := store.Search([]float32{1, 0}, 1); got != nil {
+		t.Errorf("mismatched query dimension returned %d results, want nil", len(got))
+	}
+}
+
+func TestVectorStoreResetForModelRebuild(t *testing.T) {
+	store, err := NewVectorStore(filepath.Join(t.TempDir(), "test.graph"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestVectorStore(t, store)
+
+	store.SetModel("old-model")
+	mustSucceed(t, store.Add("old", []float32{1, 0, 0}))
+	store.Reset("new-model")
+	if got := store.Len(); got != 0 {
+		t.Fatalf("Len() after Reset = %d, want 0", got)
+	}
+	if got := store.Dim(); got != 0 {
+		t.Fatalf("Dim() after Reset = %d, want 0", got)
+	}
+	if got := store.Model(); got != "new-model" {
+		t.Fatalf("Model() after Reset = %q, want new-model", got)
+	}
+	if err := store.Add("new", []float32{1, 0}); err != nil {
+		t.Fatalf("adding new model dimension after Reset: %v", err)
 	}
 }
 
@@ -61,6 +89,33 @@ func TestVectorStoreMetaPersist(t *testing.T) {
 	}
 	if reopened.Dim() != 3 {
 		t.Errorf("Dim() = %d, want 3", reopened.Dim())
+	}
+}
+
+func TestVectorStoreRejectsCorruptOrMismatchedMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.graph")
+	store, err := NewVectorStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetModel("model")
+	mustSucceed(t, store.Add("a", []float32{1, 0, 0}))
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(metaPath(path), []byte(`{"model":"model","dim":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewVectorStore(path); err == nil {
+		t.Fatal("expected graph/metadata dimension mismatch error")
+	}
+
+	if err := os.WriteFile(metaPath(path), []byte(`not-json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewVectorStore(path); err == nil {
+		t.Fatal("expected corrupt metadata error")
 	}
 }
 

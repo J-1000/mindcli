@@ -299,6 +299,58 @@ func TestRunExportProtectsOutputFile(t *testing.T) {
 	}
 }
 
+func TestOpenStoresRejectsMismatchedVectorsAndForceResets(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Join(tmpDir, "config"))
+	t.Setenv("MINDCLI_STORAGE_PATH", dataDir)
+	t.Setenv("MINDCLI_EMBEDDINGS_MODEL", "new-model")
+
+	vectorPath := filepath.Join(dataDir, "vectors.graph")
+	vectors, err := storage.NewVectorStore(vectorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectors.SetModel("old-model")
+	if err := vectors.Add("doc:0", []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := vectors.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stores, err := openStores(openOpts{vectors: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stores.vectors != nil {
+		stores.Close()
+		t.Fatal("mismatched vector store should be disabled")
+	}
+	stores.Close()
+
+	stores, err = openStores(openOpts{vectors: true, indexing: true, resetVectors: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stores.Close()
+	if stores.vectors == nil {
+		t.Fatal("forced reindex should provide a reset vector store")
+	}
+	if got := stores.vectors.Len(); got != 0 {
+		t.Fatalf("reset vector count = %d, want 0", got)
+	}
+	if got := stores.vectors.Model(); got != "new-model" {
+		t.Fatalf("reset vector model = %q, want new-model", got)
+	}
+	if got := stores.vectors.Dim(); got != 0 {
+		t.Fatalf("reset vector dimension = %d, want 0", got)
+	}
+}
+
 // TestSearchWithSourceFilter verifies the query parser integrates with search for source filtering.
 func TestSearchWithSourceFilter(t *testing.T) {
 	tmpDir := t.TempDir()
