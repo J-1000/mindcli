@@ -32,6 +32,14 @@ func TestDefault(t *testing.T) {
 	if cfg.Indexing.Workers != 4 {
 		t.Errorf("Expected default workers 4, got %d", cfg.Indexing.Workers)
 	}
+	if cfg.Sources.HTML.Enabled || cfg.Sources.DOCX.Enabled || cfg.Sources.EPUB.Enabled ||
+		cfg.Sources.Org.Enabled || cfg.Sources.Code.Enabled || cfg.Sources.PDF.OCREnabled ||
+		cfg.Sources.Email.ExtractAttachments {
+		t.Error("extended parsing, OCR, and attachment extraction must be opt-in")
+	}
+	if cfg.Sources.DOCX.MaxDecompressedBytes < cfg.Sources.DOCX.MaxFileBytes || cfg.Sources.Code.MaxFiles < 1 {
+		t.Fatal("extended source bounds were not initialized")
+	}
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -119,6 +127,34 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid browser retention",
 			modify: func(c *Config) {
 				c.Sources.Browser.RetentionDays = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid DOCX expansion limit",
+			modify: func(c *Config) {
+				c.Sources.DOCX.MaxDecompressedBytes = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid OCR page limit",
+			modify: func(c *Config) {
+				c.Sources.PDF.OCRMaxPages = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid attachment depth",
+			modify: func(c *Config) {
+				c.Sources.Email.MaxArchiveDepth = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid code file limit",
+			modify: func(c *Config) {
+				c.Sources.Code.MaxFiles = 0
 			},
 			wantErr: true,
 		},

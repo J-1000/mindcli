@@ -230,6 +230,7 @@ func TestParseQueryStrictErrors(t *testing.T) {
 		{query: "before:2026-01-01 after:2026-02-01", want: "after date must be earlier"},
 		{query: `tag:"unfinished`, want: "unterminated quote"},
 		{query: `source:`, want: `filter "source" requires a value`},
+		{query: `source:cloud`, want: `unknown source "cloud"`},
 		{query: `-source:email`, want: `filter "source" cannot be negated`},
 		{query: `word\`, want: "incomplete escape"},
 	}

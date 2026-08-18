@@ -135,6 +135,56 @@ func TestChunkPositions(t *testing.T) {
 	}
 }
 
+func TestSplitCodePreservesGoDeclarationBoundaries(t *testing.T) {
+	text := `package fixture
+
+import "fmt"
+
+func first() {
+	fmt.Println("first")
+}
+
+func second() {
+	fmt.Println("second")
+}
+`
+	chunks := SplitCode(text, "go", Options{ChunkSize: 90, Overlap: 0})
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	for index, chunk := range chunks {
+		if strings.Contains(chunk.Content, "func first") && strings.Contains(chunk.Content, "func second") {
+			t.Fatalf("chunk %d crosses declarations: %q", index, chunk.Content)
+		}
+		if chunk.StartPos < 0 || chunk.EndPos > len(text) || text[chunk.StartPos:chunk.EndPos] != chunk.Content {
+			t.Fatalf("chunk %d has invalid positions: %#v", index, chunk)
+		}
+	}
+}
+
+func TestSplitCodeKeepsPythonDecoratorWithFunction(t *testing.T) {
+	text := "import functools\n\n@functools.cache\ndef compute():\n    return 42\n\ndef other():\n    return 7\n"
+	chunks := SplitCode(text, "python", Options{ChunkSize: 70, Overlap: 0})
+	for _, chunk := range chunks {
+		if strings.Contains(chunk.Content, "def compute") && !strings.Contains(chunk.Content, "@functools.cache") {
+			t.Fatalf("decorator separated from function: %#v", chunks)
+		}
+	}
+}
+
+func TestSplitCodeBoundsLongDeclarationByLines(t *testing.T) {
+	text := "func generated() {\n" + strings.Repeat("\tprintln(\"abcdefghij\")\n", 20) + "}\n"
+	chunks := SplitCode(text, "go", Options{ChunkSize: 100, Overlap: 0})
+	if len(chunks) < 3 {
+		t.Fatalf("chunks = %d, want at least 3", len(chunks))
+	}
+	for index, chunk := range chunks {
+		if len(chunk.Content) > 120 {
+			t.Fatalf("chunk %d is unexpectedly large (%d bytes)", index, len(chunk.Content))
+		}
+	}
+}
+
 func BenchmarkSplit(b *testing.B) {
 	// ~50 KB of text to chunk.
 	var sb strings.Builder

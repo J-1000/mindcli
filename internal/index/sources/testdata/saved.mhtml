@@ -1,0 +1,15 @@
+From: <Saved by MindCLI tests>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="fixture-boundary"
+
+--fixture-boundary
+Content-Type: text/html; charset=UTF-8
+Content-Location: https://example.test/saved
+
+<!doctype html><html><head><title>Saved Page</title></head><body><main>Offline archive content.</main></body></html>
+--fixture-boundary
+Content-Type: image/png
+Content-Location: https://example.test/image.png
+
+ignored-image
+--fixture-boundary--

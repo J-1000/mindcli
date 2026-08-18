@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -515,6 +516,22 @@ func TestIndexer_RemoveFileDeletesVectors(t *testing.T) {
 	if err := searchIdx.Index(ctx, doc); err != nil {
 		t.Fatalf("indexing document: %v", err)
 	}
+	second := &storage.Document{
+		ID:          "doc-remove-section-2",
+		Source:      storage.SourceOrg,
+		Path:        doc.Path,
+		Title:       "Second section",
+		Content:     "more content",
+		ContentHash: "hash-remove-2",
+		IndexedAt:   now,
+		ModifiedAt:  now,
+	}
+	if err := db.UpsertDocument(ctx, second); err != nil {
+		t.Fatalf("upserting second document: %v", err)
+	}
+	if err := searchIdx.Index(ctx, second); err != nil {
+		t.Fatalf("indexing second document: %v", err)
+	}
 	chunk := &storage.Chunk{
 		ID:         "doc-remove:0",
 		DocumentID: doc.ID,
@@ -536,6 +553,12 @@ func TestIndexer_RemoveFileDeletesVectors(t *testing.T) {
 
 	if got := vectors.Len(); got != 0 {
 		t.Fatalf("vector count after remove = %d, want 0", got)
+	}
+	if _, err := db.GetDocument(ctx, doc.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("first document lookup error = %v, want ErrNotFound", err)
+	}
+	if _, err := db.GetDocument(ctx, second.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("second document lookup error = %v, want ErrNotFound", err)
 	}
 }
 

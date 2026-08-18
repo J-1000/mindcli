@@ -1,0 +1,12 @@
+#+TITLE: Research Notebook
+
+Portable preamble.
+
+* TODO First Topic :work:local:
+The first section has searchable details.
+
+** Nested detail
+Nested content remains with its parent section.
+
+* DONE Second Topic :archive:
+The second section is independently searchable.
