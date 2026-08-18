@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,11 +56,17 @@ type Stats struct {
 func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage.VectorStore, embedder embeddings.Embedder, cfg *config.Config) *Indexer {
 	var srcs []sources.Source
 
-	// Add markdown source if enabled
-	if cfg.Sources.Markdown.Enabled {
+	// The capture inbox is always a Markdown source so add/save can index a new
+	// portable file immediately even when ordinary note indexing is disabled.
+	markdownPaths := markdownSourcePaths(cfg)
+	if len(markdownPaths) > 0 {
+		extensions := append([]string(nil), cfg.Sources.Markdown.Extensions...)
+		if !containsExtension(extensions, ".md") {
+			extensions = append(extensions, ".md")
+		}
 		srcs = append(srcs, sources.NewMarkdownSource(
-			cfg.Sources.Markdown.Paths,
-			cfg.Sources.Markdown.Extensions,
+			markdownPaths,
+			extensions,
 			cfg.Sources.Markdown.Ignore,
 		))
 	}
@@ -115,6 +123,45 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		sources:  srcs,
 		workers:  cfg.Indexing.Workers,
 	}
+}
+
+func markdownSourcePaths(cfg *config.Config) []string {
+	var paths []string
+	if cfg.Sources.Markdown.Enabled {
+		paths = append(paths, cfg.Sources.Markdown.Paths...)
+	}
+	inbox := strings.TrimSpace(cfg.Capture.Inbox)
+	if inbox == "" {
+		return paths
+	}
+	for _, path := range paths {
+		if pathContains(path, inbox) {
+			return paths
+		}
+	}
+	return append(paths, inbox)
+}
+
+func pathContains(base, target string) bool {
+	base, baseErr := filepath.Abs(filepath.Clean(base))
+	target, targetErr := filepath.Abs(filepath.Clean(target))
+	if baseErr != nil || targetErr != nil {
+		return false
+	}
+	relative, err := filepath.Rel(base, target)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func containsExtension(extensions []string, target string) bool {
+	for _, extension := range extensions {
+		if !strings.HasPrefix(extension, ".") {
+			extension = "." + extension
+		}
+		if strings.EqualFold(extension, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetProgressReporter sets the progress reporter.
