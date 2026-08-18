@@ -79,6 +79,7 @@ func TestPrintUsage(t *testing.T) {
 		"mindcli add",
 		"mindcli save",
 		"mindcli session",
+		"mindcli profile",
 		"mindcli export",
 		"mindcli tag",
 		"mindcli clipboard",

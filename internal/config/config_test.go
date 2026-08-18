@@ -596,3 +596,101 @@ func TestConfigPathAndDirFromEnv(t *testing.T) {
 		t.Fatalf("EnsureConfigDir() did not create %q: %v", customDir, err)
 	}
 }
+
+func TestProfileNamesPathsAndDefaultsAreIsolated(t *testing.T) {
+	for _, valid := range []string{"default", "work", "Personal_2", "client-a"} {
+		if got, err := ValidateProfileName(valid); err != nil || got != valid {
+			t.Errorf("ValidateProfileName(%q) = %q, %v", valid, got, err)
+		}
+	}
+	for _, invalid := range []string{"", "../work", ".hidden", "work/personal", "naïve", strings.Repeat("x", MaxProfileNameRunes+1)} {
+		if _, err := ValidateProfileName(invalid); err == nil {
+			t.Errorf("ValidateProfileName(%q) succeeded", invalid)
+		}
+	}
+
+	defaultConfig := Default()
+	work, err := DefaultForProfile("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.ActiveProfile != "work" || work.Storage.Path == defaultConfig.Storage.Path || work.Capture.Inbox == defaultConfig.Capture.Inbox {
+		t.Fatalf("work defaults are not isolated: %+v vs %+v", work, defaultConfig)
+	}
+	if !strings.HasSuffix(work.Storage.Path, filepath.Join("profiles", "work")) || !strings.HasSuffix(work.Capture.Inbox, filepath.Join("MindCLI Inbox", "work")) {
+		t.Fatalf("work profile paths = storage %q, inbox %q", work.Storage.Path, work.Capture.Inbox)
+	}
+}
+
+func TestProfileConfigRoundTripAndSafeListing(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("MINDCLI_CONFIG_DIR", configDir)
+	t.Setenv("MINDCLI_CONFIG_PATH", "")
+	t.Setenv("MINDCLI_STORAGE_PATH", "")
+	t.Setenv("MINDCLI_CAPTURE_INBOX", "")
+
+	work, err := DefaultForProfile("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	work.Search.ResultsLimit = 17
+	work.Storage.Path = filepath.Join(t.TempDir(), "work-data")
+	if err := work.SaveProfile("work"); err != nil {
+		t.Fatal(err)
+	}
+	path, err := ConfigPathForProfile("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(configDir, "profiles", "work.yaml") {
+		t.Fatalf("work config path = %q", path)
+	}
+	loaded, err := LoadProfile("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ActiveProfile != "work" || loaded.Search.ResultsLimit != 17 || loaded.Storage.Path != work.Storage.Path {
+		t.Fatalf("loaded work profile = %+v", loaded)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("profile config mode = %v", info.Mode().Perm())
+	}
+
+	profilesDir := filepath.Join(configDir, "profiles")
+	if err := os.WriteFile(filepath.Join(profilesDir, "ignored.txt"), []byte("ignored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, ".hidden.yaml"), []byte("hidden"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, filepath.Join(profilesDir, "linked.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := ListProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profiles, ",") != "default,work" {
+		t.Fatalf("safe profile list = %#v", profiles)
+	}
+}
+
+func TestLoadUsesProfileEnvironment(t *testing.T) {
+	t.Setenv("MINDCLI_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("MINDCLI_PROFILE", "personal")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "personal" || !strings.HasSuffix(cfg.Storage.Path, filepath.Join("profiles", "personal")) {
+		t.Fatalf("environment-selected profile = %+v", cfg)
+	}
+	t.Setenv("MINDCLI_PROFILE", "../escape")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid environment profile loaded")
+	}
+}

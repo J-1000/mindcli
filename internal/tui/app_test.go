@@ -261,6 +261,7 @@ func TestSessionContextIsOrderedExcludedAndHistoryBounded(t *testing.T) {
 		{Document: docs["exclude"], State: storage.SessionDocumentExcluded},
 		{Document: docs["pin"], State: storage.SessionDocumentPinned},
 	})
+	model.SetProfile("work")
 	if len(model.conversation) != maxConversationTurns || model.conversation[0].Question != "q2" {
 		t.Fatalf("bounded resumed conversation = %+v", model.conversation)
 	}
@@ -273,8 +274,8 @@ func TestSessionContextIsOrderedExcludedAndHistoryBounded(t *testing.T) {
 		t.Fatalf("unicode context length = %d", len([]rune(contexts[0])))
 	}
 	model.width, model.height = 120, 40
-	if view := model.View(); !strings.Contains(view, "session: Research") {
-		t.Fatalf("session identity missing from TUI:\n%s", view)
+	if view := model.View(); !strings.Contains(view, "session: Research") || !strings.Contains(view, "profile: work") {
+		t.Fatalf("session/profile identity missing from TUI:\n%s", view)
 	}
 }
 
