@@ -241,7 +241,13 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		return err
+	}
+	// WriteFile preserves an existing file's mode, so explicitly tighten it in
+	// case an older MindCLI version created a world-readable config containing
+	// an API key.
+	return os.Chmod(configPath, 0o600)
 }
 
 // ConfigDir returns the directory where config files are stored.
@@ -277,12 +283,12 @@ func EnsureConfigDir() error {
 		return err
 	}
 	dir := filepath.Dir(configPath)
-	return os.MkdirAll(dir, 0755)
+	return os.MkdirAll(dir, 0o700)
 }
 
 // DataDir returns the data directory from config, creating it if needed.
 func (c *Config) DataDir() (string, error) {
-	if err := os.MkdirAll(c.Storage.Path, 0755); err != nil {
+	if err := os.MkdirAll(c.Storage.Path, 0o700); err != nil {
 		return "", err
 	}
 	return c.Storage.Path, nil
