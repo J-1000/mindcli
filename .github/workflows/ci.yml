@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        go-version: ["1.25.12"]
+        go-version: ["1.25.13"]
 
     steps:
       - uses: actions/checkout@v6
@@ -46,7 +46,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache: true
 
       - name: golangci-lint
@@ -73,7 +73,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache: true
 
       - name: Run release smoke checks
