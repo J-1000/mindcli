@@ -86,6 +86,7 @@ type Model struct {
 	sessionStates   map[string]storage.SessionDocumentState
 	currentSources  []*storage.Document
 	contextTotal    int
+	profile         string
 
 	// Dimensions
 	width  int
@@ -149,6 +150,11 @@ func New(db *storage.DB, searchIndex *search.BleveIndex, hybrid *query.HybridSea
 // SetCapture enables the in-app quick-capture action.
 func (m *Model) SetCapture(capture func(context.Context, string) (string, error)) {
 	m.capture = capture
+}
+
+// SetProfile makes the active isolation boundary visible in the TUI.
+func (m *Model) SetProfile(profile string) {
+	m.profile = strings.TrimSpace(profile)
 }
 
 // SetSession resumes an explicitly persisted research session. Only resumed
@@ -1404,6 +1410,9 @@ func (m Model) View() string {
 	// Header
 	header := styles.TitleStyle.Render("MindCLI") +
 		styles.SubtitleStyle.Render(" - Personal Knowledge Search")
+	if m.profile != "" {
+		header += styles.SubtitleStyle.Render(" [profile: " + m.profile + "]")
+	}
 	if m.session != nil {
 		header += styles.SubtitleStyle.Render(" [session: " + m.redactor.Redact(m.session.Name) + "]")
 	}

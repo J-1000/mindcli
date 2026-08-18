@@ -495,6 +495,7 @@ func runTUIWithSession(sessionName string) error {
 	}
 
 	model := tui.New(s.db, s.bleve, s.hybrid, s.llm, redactor, reindex)
+	model.SetProfile(s.cfg.ActiveProfile)
 	if strings.TrimSpace(sessionName) != "" {
 		session, err := sessionByName(context.Background(), s.db, sessionName)
 		if err != nil {
