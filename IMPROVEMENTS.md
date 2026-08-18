@@ -180,7 +180,7 @@ The first five unblock or simplify the rest:
 - ✨ **In-TUI filters** for source / tag / date range (toggle keys), not just the NL "in my emails" path.
 - ✨ **Conversational follow-ups** (plan Phase 9). The `ask`/stream is single-shot; add a chat history buffer + "tell me more" that re-feeds prior turns.
 - ✨ **`mindcli stats`** — counts by source, index size on disk, embedding coverage (% docs with vectors), last-indexed. Data already in the DB (`CountDocumentsBySource`, etc.).
-- ✨ **`mindcli reindex --force` / `mindcli clean`** — full rebuild and orphan prune (shares the reconcile pass from #6). Plus `config --edit` (`$EDITOR`) and `config --path`.
+- ✨ **`mindcli reindex --force` / `mindcli clean`** — full rebuild and orphan prune (shares the reconcile pass from #6). Plus `config --edit` (`$EDITOR`); `config --path` is implemented.
 
 ### Tier 3 — reach
 - ✨ More sources: code repos (language-aware chunking), Obsidian/Apple Notes, `.docx`/EPUB, RSS, chat exports.
@@ -192,7 +192,7 @@ The first five unblock or simplify the rest:
 
 ## 5. Bigger ideas
 
-- 💡 **First-class embedding-model upgrades.** Building on #1: stamp model+dim in the vector store, detect mismatch on startup, and offer a guided re-embed. Turns a footgun into a feature.
+- 💡 **First-class embedding-model upgrades.** Implemented: vector stores are stamped with model/dimension metadata, incompatible graphs are disabled safely, and `mindcli reindex` resets and rebuilds them.
 - 💡 **Privacy & threat model doc + at-rest encryption.** Write `docs/PRIVACY.md` stating plainly that browser/clipboard/email/notes content is stored in cleartext SQLite and that redaction is display-time. Then consider a build-tagged SQLCipher option (`mattn/go-sqlite3` supports SQLCipher builds) as a real differentiator.
 - 💡 **Verify the performance targets.** Land the T4 benchmarks and add a "Performance" section to the README with measured numbers, replacing the aspirational `plan.md` metrics.
 
@@ -231,7 +231,7 @@ Testing
 
 Features
 [x] T1: in-TUI index, snippets, search-as-you-type, doctor
-[x] T2: smart collections, filters, follow-ups, stats, reindex/clean
+[x] T2: smart collections, filters, follow-ups, stats, reindex/clean, config --path
 [~] T3: citations [x], daemon files [x]; more sources / OCR (deferred)
 ```
 

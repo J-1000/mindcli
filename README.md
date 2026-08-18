@@ -85,6 +85,8 @@ mindcli collection rename old-name new-name  # Rename a collection
 mindcli collection delete reading-list       # Delete a collection
 mindcli ask "what did I write about Go?"     # Ask a question (streaming RAG via configured LLM)
 mindcli config                               # Initialize default config file
+mindcli config --path                        # Print the active config path
+mindcli config --force                       # Replace an existing config with defaults
 mindcli version                              # Show version info
 mindcli help                                 # Show help
 ```
@@ -117,7 +119,9 @@ arguments to see command-specific usage.
 
 ## Configuration
 
-MindCLI looks for `~/.config/mindcli/config.yaml`. Run `mindcli config` to generate a default config file.
+MindCLI looks for `~/.config/mindcli/config.yaml`. Run `mindcli config` to
+generate it. Existing configuration is preserved unless you explicitly pass
+`--force`; `mindcli config --path` prints the resolved location without writing.
 
 Environment variables can override config values at runtime:
 
