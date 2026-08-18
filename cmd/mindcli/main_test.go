@@ -299,6 +299,77 @@ func TestRunExportProtectsOutputFile(t *testing.T) {
 	}
 }
 
+func TestRunConfigPreservesExistingUnlessForced(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config", "config.yaml")
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Dir(configPath))
+	t.Setenv("MINDCLI_CONFIG_PATH", configPath)
+
+	if err := runConfig(nil); err != nil {
+		t.Fatalf("initial runConfig() error = %v", err)
+	}
+	custom := []byte("custom: keep-me\n")
+	if err := os.WriteFile(configPath, custom, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runConfig(nil); err != nil {
+		t.Fatalf("second runConfig() error = %v", err)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(custom) {
+		t.Fatalf("existing config was overwritten: %q", got)
+	}
+
+	if err := runConfig([]string{"--force"}); err != nil {
+		t.Fatalf("runConfig(--force) error = %v", err)
+	}
+	got, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == string(custom) || !contains(string(got), "provider: ollama") {
+		t.Fatalf("forced config did not contain defaults: %q", got)
+	}
+}
+
+func TestRunConfigPathPrintsWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config", "config.yaml")
+	t.Setenv("MINDCLI_CONFIG_DIR", filepath.Dir(configPath))
+	t.Setenv("MINDCLI_CONFIG_PATH", configPath)
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+	if err := runConfig([]string{"--path"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); got != configPath+"\n" {
+		t.Fatalf("config --path output = %q, want %q", got, configPath+"\n")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config --path created a file or returned unexpected stat error: %v", err)
+	}
+}
+
 func TestOpenStoresRejectsMismatchedVectorsAndForceResets(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataDir := filepath.Join(tmpDir, "data")
