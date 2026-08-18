@@ -15,6 +15,7 @@ import (
 
 	"github.com/J-1000/mindcli/internal/config"
 	"github.com/J-1000/mindcli/internal/embeddings"
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/index"
 	"github.com/J-1000/mindcli/internal/privacy"
 	"github.com/J-1000/mindcli/internal/query"
@@ -228,7 +229,7 @@ func openStores(opts openOpts) (*stores, error) {
 			s.llm = query.NewOpenAILLMClient(cfg.Embeddings.OpenAIKey, cfg.Embeddings.LLMModel)
 		}
 	}
-	if opts.hybrid && s.vectors != nil && s.embedder != nil && s.vectors.Len() > 0 {
+	if opts.hybrid {
 		s.hybrid = query.NewHybridSearcher(s.bleve, s.vectors, s.embedder, s.db, cfg.Search.HybridWeight)
 	}
 
@@ -356,36 +357,36 @@ func (s *stores) Close() {
 // falling back to Bleve-only. It is the single search entry point shared by the
 // search, export, and ask commands.
 func searchResults(ctx context.Context, s *stores, parsed query.ParsedQuery, limit int) (storage.SearchResults, error) {
-	searchQ := parsed.SearchTerms
-	if parsed.SourceFilter != "" {
-		searchQ = searchQ + " source:" + parsed.SourceFilter
-	}
-
-	var results storage.SearchResults
 	if s.hybrid != nil {
-		r, err := s.hybrid.Search(ctx, searchQ, limit)
-		if err != nil {
-			return nil, err
-		}
-		results = r
-	} else {
-		bleveResults, err := s.bleve.Search(ctx, searchQ, limit)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range bleveResults {
-			doc, err := s.db.GetDocument(ctx, r.ID)
-			if err == nil && doc != nil {
-				results = append(results, &storage.SearchResult{
-					Document:  doc,
-					Score:     r.Score,
-					BM25Score: r.Score,
-				})
-			}
-		}
+		return s.hybrid.SearchParsed(ctx, parsed, limit)
 	}
 
-	return query.FilterByTime(results, parsed, time.Now()), nil
+	filters, err := query.ResolveFilters(ctx, s.db, parsed.Filters, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	candidateLimit := limit * 20
+	if candidateLimit < 200 {
+		candidateLimit = 200
+	}
+	bleveResults, err := s.bleve.SearchFiltered(ctx, parsed.Text, filters, candidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	results := make(storage.SearchResults, 0, limit)
+	for _, result := range bleveResults {
+		doc, err := s.db.GetDocument(ctx, result.ID)
+		if err != nil || !filter.MatchesDocument(doc, filters, time.Now()) {
+			continue
+		}
+		results = append(results, &storage.SearchResult{
+			Document: doc, Score: result.Score, BM25Score: result.Score,
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
 }
 
 func runTUI() error {
@@ -543,7 +544,10 @@ func runSearch(queryStr string) error {
 	}
 	defer s.Close()
 
-	parsed := query.ParseQuery(queryStr)
+	parsed, err := query.ParseQueryStrict(queryStr)
+	if err != nil {
+		return fmt.Errorf("invalid query: %w", err)
+	}
 	ctx := context.Background()
 	results, err := searchResults(ctx, s, parsed, s.cfg.Search.ResultsLimit)
 	if err != nil {
@@ -596,7 +600,10 @@ func runExport(args []string) error {
 	}
 	defer s.Close()
 
-	parsed := query.ParseQuery(queryStr)
+	parsed, err := query.ParseQueryStrict(queryStr)
+	if err != nil {
+		return fmt.Errorf("invalid query: %w", err)
+	}
 	ctx := context.Background()
 	results, err := searchResults(ctx, s, parsed, *limit)
 	if err != nil {
@@ -771,6 +778,11 @@ func runCollection(args []string) error {
 		desc := fs.String("description", "", "Collection description")
 		_ = fs.Parse(args[2:])
 
+		if strings.TrimSpace(*queryStr) != "" {
+			if _, err := query.ParseQueryStrict(*queryStr); err != nil {
+				return fmt.Errorf("invalid collection query: %w", err)
+			}
+		}
 		col := &storage.Collection{Name: name, Query: *queryStr, Description: *desc}
 		if err := db.CreateCollection(ctx, col); err != nil {
 			return fmt.Errorf("creating collection: %w", err)
@@ -830,9 +842,15 @@ func runCollection(args []string) error {
 
 		// Smart collection: also show documents matching the saved query.
 		if strings.TrimSpace(col.Query) != "" {
-			parsed := query.ParseQuery(col.Query)
+			parsed, qErr := query.ParseQueryStrict(col.Query)
+			if qErr != nil {
+				return fmt.Errorf("invalid saved query for collection %q: %w", col.Name, qErr)
+			}
 			results, qErr := searchResults(ctx, s, parsed, s.cfg.Search.ResultsLimit)
-			if qErr == nil && len(results) > 0 {
+			if qErr != nil {
+				return fmt.Errorf("searching collection %q: %w", col.Name, qErr)
+			}
+			if len(results) > 0 {
 				fmt.Printf("\nMatching saved query %q:\n", col.Query)
 				for i, r := range results {
 					fmt.Printf("  %d. %s (%s)\n", i+1, r.Document.Title, r.Document.Path)
@@ -976,7 +994,10 @@ func runAsk(question string) error {
 	}
 	defer s.Close()
 
-	parsed := query.ParseQuery(question)
+	parsed, err := query.ParseQueryStrict(question)
+	if err != nil {
+		return fmt.Errorf("invalid query: %w", err)
+	}
 	ctx := context.Background()
 	results, err := searchResults(ctx, s, parsed, 10)
 	if err != nil {

@@ -5,8 +5,10 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/J-1000/mindcli/internal/embeddings"
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/search"
 	"github.com/J-1000/mindcli/internal/storage"
 )
@@ -91,7 +93,91 @@ func (h *HybridSearcher) Search(ctx context.Context, queryStr string, limit int)
 	fused := h.fuseResults(bm25Res.results, vecRes.results)
 
 	// Fetch full documents and build results.
-	return h.buildResults(ctx, fused, limit)
+	return h.buildResults(ctx, fused, filter.Set{}, limit)
+}
+
+// SearchParsed executes a typed parsed query consistently across full-text and
+// semantic retrieval.
+func (h *HybridSearcher) SearchParsed(ctx context.Context, parsed ParsedQuery, limit int) (storage.SearchResults, error) {
+	filters, err := h.resolveFilters(ctx, parsed.Filters)
+	if err != nil {
+		return nil, err
+	}
+	text := parsed.Text
+	if text == "" && len(filters.ExactPhrases) == 0 && parsed.SearchTerms != "" && filters.Empty() {
+		text = parsed.SearchTerms
+	}
+	semanticText := strings.TrimSpace(strings.Join(append([]string{text}, filters.ExactPhrases...), " "))
+	if semanticText == "" || h.vectors == nil || h.embedder == nil || h.vectors.Len() == 0 {
+		return h.bm25OnlyFiltered(ctx, text, filters, limit)
+	}
+
+	candidateLimit := filteredCandidateLimit(limit)
+	type bm25Result struct {
+		results []search.SearchResult
+		err     error
+	}
+	type vecResult struct {
+		results []storage.VectorResult
+		err     error
+	}
+	bm25Ch := make(chan bm25Result, 1)
+	vecCh := make(chan vecResult, 1)
+	go func() {
+		results, err := h.bleve.SearchFiltered(ctx, text, filters, candidateLimit)
+		bm25Ch <- bm25Result{results: results, err: err}
+	}()
+	go func() {
+		embedding, err := h.embedder.Embed(ctx, semanticText)
+		if err != nil {
+			vecCh <- vecResult{err: err}
+			return
+		}
+		vecCh <- vecResult{results: h.vectors.Search(embedding, candidateLimit)}
+	}()
+
+	bm25 := <-bm25Ch
+	vector := <-vecCh
+	if bm25.err != nil {
+		return nil, bm25.err
+	}
+	if vector.err != nil {
+		return h.bm25OnlyFiltered(ctx, text, filters, limit)
+	}
+	return h.buildResults(ctx, h.fuseResults(bm25.results, vector.results), filters, limit)
+}
+
+func (h *HybridSearcher) resolveFilters(ctx context.Context, filters filter.Set) (filter.Set, error) {
+	return ResolveFilters(ctx, h.db, filters, time.Now())
+}
+
+// ResolveFilters resolves time conveniences and collection names into the
+// concrete filter set used by every search backend.
+func ResolveFilters(ctx context.Context, db *storage.DB, filters filter.Set, now time.Time) (filter.Set, error) {
+	filters = filter.ResolveRelativeTime(filters, now)
+	if len(filters.Collections) == 0 {
+		return filters, nil
+	}
+	ids, err := db.ResolveCollectionDocumentIDs(ctx, filters.Collections)
+	if err != nil {
+		return filter.Set{}, err
+	}
+	filters.DocumentIDs = ids
+	return filters, nil
+}
+
+func filteredCandidateLimit(limit int) int {
+	if limit < 1 {
+		limit = 1
+	}
+	candidates := limit * 20
+	if candidates < 200 {
+		candidates = 200
+	}
+	if candidates > 5000 {
+		candidates = 5000
+	}
+	return candidates
 }
 
 // fusedEntry holds the combined RRF score for a document.
@@ -165,15 +251,12 @@ func (h *HybridSearcher) fuseResults(bm25Results []search.SearchResult, vecResul
 }
 
 // buildResults fetches full documents for the fused results.
-func (h *HybridSearcher) buildResults(ctx context.Context, fused []fusedEntry, limit int) (storage.SearchResults, error) {
-	if len(fused) > limit {
-		fused = fused[:limit]
-	}
-
-	results := make(storage.SearchResults, 0, len(fused))
+func (h *HybridSearcher) buildResults(ctx context.Context, fused []fusedEntry, filters filter.Set, limit int) (storage.SearchResults, error) {
+	results := make(storage.SearchResults, 0, min(limit, len(fused)))
+	now := time.Now()
 	for _, f := range fused {
 		doc, err := h.db.GetDocument(ctx, f.docID)
-		if err != nil || doc == nil {
+		if err != nil || !filter.MatchesDocument(doc, filters, now) {
 			continue
 		}
 
@@ -192,8 +275,37 @@ func (h *HybridSearcher) buildResults(ctx context.Context, fused []fusedEntry, l
 			Highlights:  highlights,
 			ChunkID:     f.chunkKey,
 		})
+		if len(results) >= limit {
+			break
+		}
 	}
 
+	return results, nil
+}
+
+func (h *HybridSearcher) bm25OnlyFiltered(ctx context.Context, text string, filters filter.Set, limit int) (storage.SearchResults, error) {
+	bleveResults, err := h.bleve.SearchFiltered(ctx, text, filters, filteredCandidateLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	results := make(storage.SearchResults, 0, min(limit, len(bleveResults)))
+	now := time.Now()
+	for _, result := range bleveResults {
+		doc, err := h.db.GetDocument(ctx, result.ID)
+		if err != nil || !filter.MatchesDocument(doc, filters, now) {
+			continue
+		}
+		var highlights []string
+		for _, fragments := range result.Highlights {
+			highlights = append(highlights, fragments...)
+		}
+		results = append(results, &storage.SearchResult{
+			Document: doc, Score: result.Score, BM25Score: result.Score, Highlights: highlights,
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
 	return results, nil
 }
 
