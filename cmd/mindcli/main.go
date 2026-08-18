@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,12 +18,14 @@ import (
 	"github.com/J-1000/mindcli/internal/embeddings"
 	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/index"
+	"github.com/J-1000/mindcli/internal/mcpserver"
 	"github.com/J-1000/mindcli/internal/privacy"
 	"github.com/J-1000/mindcli/internal/query"
 	"github.com/J-1000/mindcli/internal/search"
 	"github.com/J-1000/mindcli/internal/storage"
 	"github.com/J-1000/mindcli/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Build-time variables set via ldflags.
@@ -65,6 +68,8 @@ func run() error {
 			return runSearch(strings.Join(os.Args[2:], " "))
 		case "related":
 			return runRelated(os.Args[2:])
+		case "mcp":
+			return runMCP()
 		case "export":
 			return runExport(os.Args[2:])
 		case "tag":
@@ -109,6 +114,7 @@ Usage:
   mindcli watch        Watch for file changes and re-index
   mindcli search "..." Search and print results
   mindcli related ...  Find documents related to a path or stable ID
+  mindcli mcp          Serve the read-only MCP protocol over stdio
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
   mindcli tag ...      Manage document tags (add, remove, list)
@@ -135,6 +141,7 @@ Examples:
   mindcli search "Go concurrency"               # Search without TUI
   mindcli related ~/notes/project.md            # Find related documents
   mindcli related --id DOCUMENT_ID --limit 10   # Find related documents by stable ID
+  mindcli mcp                                      # Connect an MCP client over stdio
   mindcli export "Go" --format csv             # Export results as CSV
   mindcli export "Go" --output results.json    # Export to file
   mindcli ask "what did I write about Go?"     # Ask a question
@@ -638,6 +645,24 @@ func runRelated(args []string) error {
 			fmt.Printf("   %s\n", preview)
 		}
 		fmt.Println()
+	}
+	return nil
+}
+
+func runMCP() error {
+	s, err := openStores(openOpts{vectors: true, embedder: true, llm: true, hybrid: true})
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	service := mcpserver.NewService(s.db, s.hybrid, s.llm, buildRedactor(s.cfg))
+	server := mcpserver.New(service, version, logger)
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("running MCP server: %w", err)
 	}
 	return nil
 }
