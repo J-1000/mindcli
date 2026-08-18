@@ -275,5 +275,6 @@ func extractedDocument(source storage.Source, file FileInfo, title, content stri
 }
 
 func stableDocumentID(source storage.Source, parts ...string) string {
-	return hashPath(string(source) + "\x00" + strings.Join(parts, "\x00"))
+	digest := hashContent(string(source) + "\x00" + strings.Join(parts, "\x00"))
+	return string(source) + ":" + digest[:32]
 }
