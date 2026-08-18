@@ -32,7 +32,7 @@ Some content with #tag1 and #tag2.
 Link to [[Another Note]] and [External](https://example.com).
 `,
 			wantTitle: "My Note",
-			wantTags:  []string{"tag1", "tag2"},
+			wantTags:  []string{"test", "demo", "tag1", "tag2"},
 			wantLinks: []string{"Another Note", "https://example.com"},
 			wantFM: map[string]string{
 				"title": "My Note",

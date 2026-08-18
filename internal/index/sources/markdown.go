@@ -104,6 +104,10 @@ func (m *MarkdownSource) Parse(ctx context.Context, file FileInfo) (*storage.Doc
 	// Include frontmatter fields
 	for k, v := range parsed.Frontmatter {
 		metadata["fm_"+k] = v
+		switch strings.ToLower(k) {
+		case "source_url", "collection", "captured_at":
+			metadata[strings.ToLower(k)] = v
+		}
 	}
 
 	// Generate ID from path (stable across re-indexing)
@@ -167,9 +171,16 @@ func parseMarkdown(content string) ParsedMarkdown {
 		}
 	}
 
-	// Extract tags
+	// Extract tags from portable frontmatter and inline #tag syntax.
 	tagMatches := tagRegex.FindAllStringSubmatch(body, -1)
 	tagSet := make(map[string]bool)
+	for _, tag := range parseFrontmatterList(result.Frontmatter["tags"]) {
+		tag = strings.ToLower(tag)
+		if !tagSet[tag] {
+			tagSet[tag] = true
+			result.Tags = append(result.Tags, tag)
+		}
+	}
 	for _, match := range tagMatches {
 		if len(match) > 1 {
 			tag := strings.ToLower(match[1])
@@ -197,6 +208,17 @@ func parseMarkdown(content string) ParsedMarkdown {
 	}
 
 	result.Body = body
+	return result
+}
+
+func parseFrontmatterList(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.Trim(strings.TrimSpace(item), `"'`)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
 	return result
 }
 
