@@ -821,6 +821,48 @@ func (d *DB) GetCollectionDocuments(ctx context.Context, collectionID string) ([
 	return docs, rows.Err()
 }
 
+// ResolveCollectionDocumentIDs returns the de-duplicated union of document IDs
+// in the named collections. An unknown collection is reported explicitly so a
+// mistyped structured filter does not silently look like an empty result set.
+func (d *DB) ResolveCollectionDocumentIDs(ctx context.Context, names []string) ([]string, error) {
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, name := range names {
+		collection, err := d.GetCollectionByName(ctx, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, fmt.Errorf("collection %q not found", name)
+			}
+			return nil, err
+		}
+		rows, err := d.db.QueryContext(ctx,
+			`SELECT document_id FROM collection_documents WHERE collection_id = ? ORDER BY added_at DESC`,
+			collection.ID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("getting collection %q document IDs: %w", name, err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scanning collection %q document ID: %w", name, err)
+			}
+			if _, exists := seen[id]; !exists {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("closing collection %q documents: %w", name, err)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterating collection %q document IDs: %w", name, err)
+		}
+	}
+	return ids, nil
+}
+
 // CountCollectionDocuments returns the number of documents in a collection.
 func (d *DB) CountCollectionDocuments(ctx context.Context, collectionID string) (int, error) {
 	var count int
