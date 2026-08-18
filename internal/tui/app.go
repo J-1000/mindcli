@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/J-1000/mindcli/internal/filter"
 	"github.com/J-1000/mindcli/internal/privacy"
 	"github.com/J-1000/mindcli/internal/query"
 	"github.com/J-1000/mindcli/internal/search"
@@ -149,15 +150,16 @@ func (m Model) loadDocuments() tea.Cmd {
 func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		parsed := query.ParseQuery(q)
+		parsed, err := query.ParseQueryStrict(q)
+		if err != nil {
+			return errMsg{fmt.Errorf("invalid query: %w", err)}
+		}
 
-		// Build search query with source filter (from the NL query, or the
-		// active filter toggled with 'f').
-		searchQ := parsed.SearchTerms
-		if parsed.SourceFilter != "" {
-			searchQ = searchQ + " source:" + parsed.SourceFilter
-		} else if m.sourceFilter != "" {
-			searchQ = searchQ + " source:" + string(m.sourceFilter)
+		// An explicit source/type filter takes precedence over the source
+		// filter toggled with 'f'.
+		if len(parsed.Filters.Sources) == 0 && m.sourceFilter != "" {
+			parsed.Filters.Sources = []storage.Source{m.sourceFilter}
+			parsed.SourceFilter = string(m.sourceFilter)
 		}
 
 		var docs []*storage.Document
@@ -165,7 +167,7 @@ func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 
 		// Use hybrid search if available
 		if m.hybrid != nil {
-			results, err := m.hybrid.Search(ctx, searchQ, 50)
+			results, err := m.hybrid.SearchParsed(ctx, parsed, 50)
 			if err != nil {
 				return errMsg{err}
 			}
@@ -178,7 +180,11 @@ func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 			}
 		} else if m.search != nil {
 			// Use Bleve, fall back to SQLite LIKE search
-			results, err := m.search.Search(ctx, searchQ, 50)
+			filters, err := query.ResolveFilters(ctx, m.db, parsed.Filters, time.Now())
+			if err != nil {
+				return errMsg{err}
+			}
+			results, err := m.search.SearchFiltered(ctx, parsed.Text, filters, 1000)
 			if err != nil {
 				return errMsg{err}
 			}
@@ -189,22 +195,42 @@ func (m Model) searchDocuments(q string, live bool) tea.Cmd {
 				if err != nil {
 					continue
 				}
+				if !filter.MatchesDocument(doc, filters, time.Now()) {
+					continue
+				}
 				docs = append(docs, doc)
 				for _, frags := range r.Highlights {
 					highlights[doc.ID] = append(highlights[doc.ID], frags...)
 				}
+				if len(docs) >= 50 {
+					break
+				}
 			}
 		} else {
 			// Fallback to simple SQLite search
-			var err error
-			docs, err = m.db.SearchDocuments(ctx, parsed.SearchTerms, 50)
+			filters, err := query.ResolveFilters(ctx, m.db, parsed.Filters, time.Now())
 			if err != nil {
 				return errMsg{err}
 			}
+			if parsed.Text == "" {
+				docs, err = m.db.ListDocuments(ctx, "")
+			} else {
+				docs, err = m.db.SearchDocuments(ctx, parsed.Text, 5000)
+			}
+			if err != nil {
+				return errMsg{err}
+			}
+			filtered := docs[:0]
+			for _, doc := range docs {
+				if filter.MatchesDocument(doc, filters, time.Now()) {
+					filtered = append(filtered, doc)
+					if len(filtered) >= 50 {
+						break
+					}
+				}
+			}
+			docs = filtered
 		}
-
-		// Apply any parsed time filter (e.g. "last week").
-		docs = query.FilterDocumentsByTime(docs, parsed, time.Now())
 
 		return searchResultsMsg{docs: docs, highlights: highlights, parsed: parsed, live: live}
 	}
@@ -332,11 +358,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.answerText = ""
 		status := fmt.Sprintf("%d results", len(m.results))
-		if msg.parsed.SourceFilter != "" {
-			status += fmt.Sprintf(" [source:%s]", msg.parsed.SourceFilter)
+		labels := msg.parsed.Filters.Labels()
+		if len(msg.parsed.Filters.Sources) == 0 && msg.parsed.SourceFilter != "" {
+			labels = append(labels, "source:"+msg.parsed.SourceFilter)
 		}
-		if msg.parsed.TimeFilter != "" {
-			status += fmt.Sprintf(" [%s]", msg.parsed.TimeFilter)
+		if msg.parsed.Filters.RelativeTime == "" && msg.parsed.TimeFilter != "" {
+			labels = append(labels, msg.parsed.TimeFilter)
+		}
+		if len(labels) > 0 {
+			status += " [" + strings.Join(labels, "] [") + "]"
 		}
 		m.statusMsg = status
 		m.statusIsErr = false
