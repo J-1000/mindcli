@@ -28,8 +28,9 @@ By default, indexed content is stored **in cleartext**:
 | HNSW | `vectors.graph` | chunk embeddings (+ `vectors.graph.meta.json` model/dim) |
 | Cache | `embeddings.db` | content-hash → embedding vectors |
 
-So a note, PDF, email, browser title, fetched browser page, or clipboard entry
-that you index is searchable in cleartext on disk.
+So a note, PDF, email, browser title, fetched browser page, capture, or clipboard
+entry that you index is searchable in cleartext on disk. Captures also remain
+as cleartext Markdown source files in the configured inbox.
 
 ## Redaction
 
@@ -60,6 +61,16 @@ privacy:
 - **Clipboard:** with `sources.clipboard.skip_passwords: true`, entries that look
   like passwords are not indexed; `retention_days` bounds how long clipboard
   history is kept (`mindcli clipboard cleanup`).
+- **Capture:** `mindcli add`, `mindcli save`, and TUI quick capture write
+  portable Markdown files under `capture.inbox` before indexing them. MindCLI
+  creates the inbox with mode `0700` and new capture files with mode `0600`, but
+  these permissions do not encrypt the content or override access held by your
+  user account. Text can come from arguments, stdin, or a local editor process.
+  Captures are limited to 5 MiB and are immediately stored in the same local
+  indexes listed above. `mindcli save` makes no page request unless
+  `sources.browser.include_content` is true; when enabled, the browser fetch
+  limits, content-type checks, cookie-free client, and domain policy below also
+  apply. Failed fetches fall back to a URL-only Markdown capture.
 - **Browser:** each normalized URL is stored as its own document with browser,
   profile, visit count, last-visit time, and bookmark/history metadata. Repeated
   visits within a profile are deduplicated. By default, only this local browser

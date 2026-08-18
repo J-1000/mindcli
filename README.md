@@ -17,6 +17,7 @@ OpenAI-compatible API.
 - **Export** — Search results to JSON, CSV, or Markdown
 - **Tagging** — Manual tags on any document, displayed in TUI and searchable
 - **Collections** — Named groups of documents (like playlists), with CLI and TUI management
+- **Quick capture** — Save thoughts, pasted text, and public web pages into a portable Markdown inbox
 - **Fast** — Concurrent worker pool indexing, incremental updates, content-hash caching
 - **File watcher** — Real-time re-indexing via fsnotify with debouncing
 - **Private by default** — Local storage, no telemetry, password detection for clipboard
@@ -68,6 +69,10 @@ mindcli search 'tag:project after:2026-07-01 "launch plan"'
 mindcli related ~/notes/project.md            # Find related documents
 mindcli related --id DOCUMENT_ID --limit 10   # Use a stable document ID
 mindcli mcp                                   # Serve read-only MCP over stdio
+mindcli add "Idea for the search ranking"     # Capture text into the Markdown inbox
+pbpaste | mindcli add --tag inbox             # Capture stdin with tags
+mindcli add --editor --collection research    # Capture through $VISUAL or $EDITOR
+mindcli save https://example.com/article      # Save a normalized URL, optionally with reader text
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -111,6 +116,7 @@ arguments to see command-specific usage.
 | `r` | Refresh document list |
 | `R` | Replace results with documents related to the selection |
 | `i` | Index sources now (in-app) |
+| `Ctrl+n` | Quick capture a thought to the Markdown inbox |
 | `f` | Cycle source filter (all → markdown → pdf → …) |
 | `t` | Add tag to selected document |
 | `c` | Add to collection |
@@ -138,6 +144,7 @@ Environment variables can override config values at runtime:
 - Email: `MINDCLI_SOURCES_EMAIL_ENABLED`, `MINDCLI_SOURCES_EMAIL_PATHS`, `MINDCLI_SOURCES_EMAIL_FORMATS`, `MINDCLI_SOURCES_EMAIL_IGNORE`, `MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW`
 - Browser: `MINDCLI_SOURCES_BROWSER_ENABLED`, `MINDCLI_SOURCES_BROWSER_BROWSERS`, `MINDCLI_SOURCES_BROWSER_INCLUDE_CONTENT`, `MINDCLI_SOURCES_BROWSER_ALLOWED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_DENIED_DOMAINS`, `MINDCLI_SOURCES_BROWSER_MAX_RESPONSE_BYTES`, `MINDCLI_SOURCES_BROWSER_REQUEST_TIMEOUT_SECONDS`, `MINDCLI_SOURCES_BROWSER_FETCH_CONCURRENCY`, `MINDCLI_SOURCES_BROWSER_MAX_PAGES`, `MINDCLI_SOURCES_BROWSER_RETENTION_DAYS`
 - Clipboard: `MINDCLI_SOURCES_CLIPBOARD_ENABLED`, `MINDCLI_SOURCES_CLIPBOARD_RETENTION_DAYS`, `MINDCLI_SOURCES_CLIPBOARD_SKIP_PASSWORDS`
+- Capture: `MINDCLI_CAPTURE_INBOX`
 - Privacy: `MINDCLI_PRIVACY_REDACT_PATTERNS`, `MINDCLI_PRIVACY_REDACT_CONTENT`
 
 ```yaml
@@ -181,6 +188,9 @@ sources:
     retention_days: 30
     skip_passwords: true
 
+capture:
+  inbox: ~/Documents/MindCLI Inbox
+
 embeddings:
   provider: ollama       # or "openai"
   model: nomic-embed-text
@@ -209,6 +219,26 @@ privacy:
     - (?i)secret\s*[:=]\s*[A-Za-z0-9_-]{16,}
     - \b[0-9]{16}\b
 ```
+
+## Quick capture and inbox
+
+`mindcli add` accepts text as command arguments or stdin. Pass `--editor` to
+open `$VISUAL` or `$EDITOR`; `--title`, repeatable or comma-separated `--tag`,
+`--collection`, and `--source-url` add portable metadata. A missing named
+collection is created automatically. Captures are limited to 5 MiB.
+
+`mindcli save URL` stores a normalized HTTP or HTTPS URL. When
+`sources.browser.include_content` is true, it also attempts the same bounded,
+cookie-free reader-mode fetch used by browser indexing. A failed fetch still
+saves the URL. Common tracking parameters and fragments are removed during
+normalization, and saving the same normalized URL again returns the existing
+file without overwriting it.
+
+Every capture is atomically written as Markdown under `capture.inbox` and then
+indexed immediately, without requiring embeddings or an LLM. The capture inbox
+is treated as a Markdown source even when the ordinary Markdown source is
+disabled. User-supplied frontmatter is preserved. Press `Ctrl+n` in the TUI for
+a single-line capture tagged `inbox`.
 
 ## Privacy
 
