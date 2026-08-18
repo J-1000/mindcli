@@ -36,8 +36,8 @@ that you index is searchable in cleartext on disk.
 Redaction has two layers, controlled by `privacy.redact_patterns`:
 
 - **Display-time (default):** matches are replaced with `[REDACTED]` in search
-  output, exports, and generated answers. The underlying stored content is
-  **not** changed.
+  output, exports, generated answers, and every MCP tool result. The underlying
+  stored content is **not** changed.
 - **Index-time (opt-in):** set `privacy.redact_content: true` to apply the same
   patterns to document content and previews **before** they are written to
   SQLite and the search index. Secrets matching your patterns are then never
@@ -80,6 +80,29 @@ privacy:
   oversized, unsupported, and offline pages do not fail history indexing: the
   title and URL remain searchable with a content-status marker.
 
+## MCP boundary
+
+`mindcli mcp` is a read-only stdio server. It opens no listening socket and
+does not provide write, tag, collection-mutation, capture, index, or delete
+tools. Result counts and textual fields are bounded, stable document IDs and
+source provenance are preserved, and configured display-time redaction is
+applied before any tool response is returned. Protocol stdout is kept separate
+from diagnostics on stderr.
+
+Read-only does not mean that returned data remains local. An MCP client that can
+launch MindCLI can search and read the configured index, then copy those
+results elsewhere. If that client uses a remote model, its requests may send
+MindCLI results to that provider. MindCLI cannot enforce the client's access,
+retention, or training policy after a response crosses the stdio boundary; only
+configure clients you trust.
+
+The `ask` tool also uses the configured LLM provider, and semantic search or
+related-document scoring may use the configured embedding provider. With a
+remote provider, the same document/question transmission described above under
+"What stays local" applies. Display-time redaction protects MCP responses but
+does not alter the stored source text sent to a configured model provider; use
+index-time redaction when that is required by your threat model.
+
 ## What MindCLI does not (yet) do
 
 - **No at-rest encryption.** The database and indexes are not encrypted. If your
@@ -87,7 +110,7 @@ privacy:
   encryption** (FileVault, LUKS, BitLocker). A SQLCipher-backed build is a
   possible future option.
 - **No per-document access control.** Anything you index is searchable by anyone
-  with read access to the data directory.
+  with read access to the data directory or permission to launch the MCP server.
 
 ## Removing data
 

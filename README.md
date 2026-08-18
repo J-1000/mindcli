@@ -67,6 +67,7 @@ mindcli search "Go concurrency"              # Search and print results
 mindcli search 'tag:project after:2026-07-01 "launch plan"'
 mindcli related ~/notes/project.md            # Find related documents
 mindcli related --id DOCUMENT_ID --limit 10   # Use a stable document ID
+mindcli mcp                                   # Serve read-only MCP over stdio
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -219,6 +220,43 @@ cleartext under the data directory, and `redact_patterns` applies at display
 time only. Set `privacy.redact_content: true` to redact content before it is
 stored. See [PRIVACY.md](PRIVACY.md) for the full threat model,
 source-specific controls, and at-rest-encryption guidance.
+
+## MCP server
+
+`mindcli mcp` exposes the local index to MCP-compatible assistants and editors
+over stdio. It does not listen on a network port. Configure a client to launch
+the MindCLI binary as a subprocess, for example:
+
+```json
+{
+  "mcpServers": {
+    "mindcli": {
+      "command": "/absolute/path/to/mindcli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The server implements MCP `2026-07-28` through the official Go SDK and remains
+compatible with supported older clients. It exposes seven read-only tools:
+`search`, `ask`, `get_document`, `list_collections`, `show_collection`,
+`recent_documents`, and `related_documents`. Every result includes stable
+document IDs and source provenance where applicable. The `search` and `ask`
+tools accept the same structured filters as the CLI, either inside the query or
+through a typed `filters` object.
+
+Tool inputs and outputs are bounded: queries are limited to 4 KiB, result lists
+to 50 items, individual document content to 20 KiB, previews and metadata
+values to 1 KiB, and generated answers to 32 KiB. `get_document` accepts a
+smaller `max_content_bytes`; `recent_documents` accepts lookbacks such as `7d`,
+`2w`, and `24h`. Invalid types, dates, filters, and limits return visible tool
+errors. Protocol traffic is written only to stdout; diagnostics go to stderr.
+
+Configured display-time redaction is applied to every tool result. See
+[PRIVACY.md](PRIVACY.md) before connecting MindCLI to a client backed by a
+remote model: once a client receives local content, that client's own privacy
+and retention policy applies.
 
 ## Running in the background
 
