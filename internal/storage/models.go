@@ -115,6 +115,51 @@ type Collection struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// ResearchSession is a named, explicitly persisted research conversation.
+// Ordinary TUI conversations remain ephemeral unless a session is resumed.
+type ResearchSession struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SessionCitation snapshots source provenance at answer time so exported
+// briefs retain useful citations even if an indexed document is later removed.
+type SessionCitation struct {
+	DocumentID string `json:"document_id"`
+	Title      string `json:"title"`
+	Path       string `json:"path"`
+	Source     Source `json:"source"`
+}
+
+// SessionTurn is one persisted question and generated answer.
+type SessionTurn struct {
+	ID        string            `json:"id"`
+	SessionID string            `json:"session_id"`
+	Question  string            `json:"question"`
+	Answer    string            `json:"answer"`
+	Citations []SessionCitation `json:"citations,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+// SessionDocumentState controls how a document participates in subsequent
+// answers for a persisted session.
+type SessionDocumentState string
+
+const (
+	SessionDocumentIncluded SessionDocumentState = "included"
+	SessionDocumentPinned   SessionDocumentState = "pinned"
+	SessionDocumentExcluded SessionDocumentState = "excluded"
+)
+
+// SessionDocument joins a live document to its session-specific context state.
+type SessionDocument struct {
+	Document *Document            `json:"document"`
+	State    SessionDocumentState `json:"state"`
+	AddedAt  time.Time            `json:"added_at"`
+}
+
 // SearchResult represents a search result with scoring information.
 type SearchResult struct {
 	Document    *Document `json:"document"`

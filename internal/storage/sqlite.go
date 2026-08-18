@@ -19,6 +19,9 @@ var ErrNotFound = errors.New("document not found")
 // ErrCollectionExists is returned when a collection name already exists.
 var ErrCollectionExists = errors.New("collection already exists")
 
+// ErrSessionExists is returned when a research session name already exists.
+var ErrSessionExists = errors.New("research session already exists")
+
 // DB wraps a SQLite database connection.
 type DB struct {
 	db *sql.DB
@@ -157,6 +160,34 @@ func migrationList() []migration {
 			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_collection_documents_doc ON collection_documents(document_id)`,
+	}}, {version: 2, stmts: []string{
+		`CREATE TABLE IF NOT EXISTS research_sessions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_research_sessions_updated ON research_sessions(updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS session_turns (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			question TEXT NOT NULL,
+			answer TEXT NOT NULL,
+			citations TEXT NOT NULL DEFAULT '[]',
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY (session_id) REFERENCES research_sessions(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_turns_session ON session_turns(session_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS session_documents (
+			session_id TEXT NOT NULL,
+			document_id TEXT NOT NULL,
+			state TEXT NOT NULL CHECK (state IN ('included', 'pinned', 'excluded')),
+			added_at DATETIME NOT NULL,
+			PRIMARY KEY (session_id, document_id),
+			FOREIGN KEY (session_id) REFERENCES research_sessions(id) ON DELETE CASCADE,
+			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_documents_state ON session_documents(session_id, state, added_at)`,
 	}}}
 }
 
