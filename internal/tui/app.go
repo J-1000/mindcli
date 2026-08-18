@@ -637,19 +637,12 @@ func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if err := m.db.AddTag(ctx, doc.ID, tag); err != nil {
 				m.statusMsg = "Tag error: " + err.Error()
 				m.statusIsErr = true
+			} else if err := m.syncDocumentTags(ctx, doc); err != nil {
+				m.statusMsg = "Tag sync error: " + err.Error()
+				m.statusIsErr = true
 			} else {
 				m.statusMsg = fmt.Sprintf("Added tag %q to %s", tag, doc.Title)
 				m.statusIsErr = false
-				// Update metadata to reflect the new tag immediately
-				if doc.Metadata == nil {
-					doc.Metadata = make(map[string]string)
-				}
-				existing := doc.Metadata["tags"]
-				if existing != "" {
-					doc.Metadata["tags"] = existing + "," + tag
-				} else {
-					doc.Metadata["tags"] = tag
-				}
 				m.updatePreviewContent()
 			}
 		}
@@ -667,6 +660,19 @@ func (m Model) updateTagInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.tagInput, cmd = m.tagInput.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) syncDocumentTags(ctx context.Context, doc *storage.Document) error {
+	if err := m.db.AttachStoredTags(ctx, doc); err != nil {
+		return err
+	}
+	if err := m.db.UpdateDocument(ctx, doc); err != nil {
+		return err
+	}
+	if m.search != nil {
+		return m.search.Index(ctx, doc)
+	}
+	return nil
 }
 
 func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -977,7 +983,7 @@ func (m *Model) updatePreviewContent() {
 	sb.WriteString(" • ")
 	sb.WriteString(styles.PreviewMetadataStyle.Render(doc.Path))
 	sb.WriteString("\n")
-	if tags := doc.Metadata["tags"]; tags != "" {
+	if tags := doc.TagsString(); tags != "" {
 		sb.WriteString("Tags: " + tags + "\n")
 	}
 	// Show collection memberships.
@@ -1130,10 +1136,8 @@ func (m Model) renderResults(width, height int) string {
 
 		source := styles.SourceBadge(string(doc.Source)).Render(string(doc.Source))
 		var tagStr string
-		if tags := doc.Metadata["tags"]; tags != "" {
-			for _, t := range strings.Split(tags, ",") {
-				tagStr += " " + styles.TagBadge(strings.TrimSpace(t))
-			}
+		for _, tag := range doc.Tags() {
+			tagStr += " " + styles.TagBadge(tag)
 		}
 		sb.WriteString(line + " " + source + tagStr + "\n")
 	}

@@ -44,7 +44,7 @@ func exportCSV(w io.Writer, results storage.SearchResults, redactor privacy.Reda
 			r.Document.Path,
 			string(r.Document.Source),
 			fmt.Sprintf("%.4f", r.Score),
-			r.Document.Metadata["tags"],
+			r.Document.TagsString(),
 			r.Document.ModifiedAt.Format(time.RFC3339),
 		}); err != nil {
 			return fmt.Errorf("writing CSV row: %w", err)
@@ -68,7 +68,7 @@ func exportMarkdown(w io.Writer, results storage.SearchResults, redactor privacy
 		if _, err := fmt.Fprintf(w, "- **Score:** %.4f\n", r.Score); err != nil {
 			return err
 		}
-		if tags := r.Document.Metadata["tags"]; tags != "" {
+		if tags := r.Document.TagsString(); tags != "" {
 			if _, err := fmt.Fprintf(w, "- **Tags:** %s\n", tags); err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ func toExportDoc(r *storage.SearchResult, redactor privacy.Redactor) exportDoc {
 		Source:     string(r.Document.Source),
 		Preview:    redactor.Redact(r.Document.Preview),
 		Score:      r.Score,
-		Tags:       r.Document.Metadata["tags"],
+		Tags:       r.Document.TagsString(),
 		ModifiedAt: r.Document.ModifiedAt.Format(time.RFC3339),
 		Metadata:   r.Document.Metadata,
 	}

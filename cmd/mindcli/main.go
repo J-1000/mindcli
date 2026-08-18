@@ -641,6 +641,9 @@ func runTag(args []string) error {
 		if err := db.AddTag(ctx, doc.ID, args[2]); err != nil {
 			return fmt.Errorf("adding tag: %w", err)
 		}
+		if err := syncDocumentTags(ctx, db, s.bleve, doc); err != nil {
+			return fmt.Errorf("updating tag search data: %w", err)
+		}
 		fmt.Printf("Added tag %q to %s\n", args[2], doc.Title)
 
 	case "remove":
@@ -653,6 +656,9 @@ func runTag(args []string) error {
 		}
 		if err := db.RemoveTag(ctx, doc.ID, args[2]); err != nil {
 			return fmt.Errorf("removing tag: %w", err)
+		}
+		if err := syncDocumentTags(ctx, db, s.bleve, doc); err != nil {
+			return fmt.Errorf("updating tag search data: %w", err)
 		}
 		fmt.Printf("Removed tag %q from %s\n", args[2], doc.Title)
 
@@ -696,6 +702,16 @@ func runTag(args []string) error {
 	}
 
 	return nil
+}
+
+func syncDocumentTags(ctx context.Context, db *storage.DB, searchIndex *search.BleveIndex, doc *storage.Document) error {
+	if err := db.AttachStoredTags(ctx, doc); err != nil {
+		return err
+	}
+	if err := db.UpdateDocument(ctx, doc); err != nil {
+		return err
+	}
+	return searchIndex.Index(ctx, doc)
 }
 
 func runCollection(args []string) error {
