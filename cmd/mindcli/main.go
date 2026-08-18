@@ -82,7 +82,7 @@ func run() error {
 		case "doctor":
 			return runDoctor()
 		case "config":
-			return runConfigInit()
+			return runConfig(os.Args[2:])
 		case "version", "-v", "--version":
 			fmt.Printf("mindcli %s (commit: %s, built: %s)\n", version, commit, date)
 			return nil
@@ -113,7 +113,7 @@ Usage:
   mindcli clean        Remove documents whose files no longer exist
   mindcli stats        Show index statistics
   mindcli doctor       Check configuration and service health
-  mindcli config       Initialize config file
+  mindcli config       Initialize config file (--path, --force)
   mindcli version      Show version info
   mindcli help         Show this help
 
@@ -1207,13 +1207,39 @@ func runDoctor() error {
 	return nil
 }
 
-func runConfigInit() error {
+func runConfig(args []string) error {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	force := fs.Bool("force", false, "Replace an existing config with defaults")
+	showPath := fs.Bool("path", false, "Print the config path without writing a file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return fmt.Errorf("usage: mindcli config [--path] [--force]")
+	}
+
+	configPath, err := config.ConfigPath()
+	if err != nil {
+		return fmt.Errorf("getting config path: %w", err)
+	}
+	if *showPath {
+		fmt.Println(configPath)
+		return nil
+	}
+	if !*force {
+		if _, err := os.Stat(configPath); err == nil {
+			fmt.Printf("Config already exists at: %s\nUse 'mindcli config --force' to replace it with defaults.\n", configPath)
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("checking config file: %w", err)
+		}
+	}
+
 	cfg := config.Default()
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	configPath, _ := config.ConfigPath()
 	fmt.Printf("Config written to: %s\n", configPath)
 	return nil
 }
