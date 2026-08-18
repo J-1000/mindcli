@@ -88,6 +88,8 @@ func run() error {
 			return runSave(args[1:])
 		case "session":
 			return runSession(args[1:])
+		case "digest":
+			return runDigest(args[1:])
 		case "export":
 			return runExport(args[1:])
 		case "tag":
@@ -164,6 +166,7 @@ Usage:
   mindcli add ...      Capture text into the Markdown inbox
   mindcli save URL     Save a URL into the Markdown inbox
   mindcli session ...  Manage persistent research sessions
+  mindcli digest ...   Export an on-demand Markdown activity digest
   mindcli profile ...  Create or safely list isolated profiles
   mindcli export "..." Export search results (--format json|csv|markdown)
   mindcli ask "..."    Ask a question (RAG answer via Ollama)
