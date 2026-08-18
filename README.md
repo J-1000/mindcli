@@ -65,6 +65,8 @@ mindcli reindex -paths ~/notes               # Full rebuild for specific paths
 mindcli watch                                # Watch directories for changes
 mindcli search "Go concurrency"              # Search and print results
 mindcli search 'tag:project after:2026-07-01 "launch plan"'
+mindcli related ~/notes/project.md            # Find related documents
+mindcli related --id DOCUMENT_ID --limit 10   # Use a stable document ID
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -106,6 +108,7 @@ arguments to see command-specific usage.
 | `o` | Open in external app |
 | `y` | Copy file path to clipboard |
 | `r` | Refresh document list |
+| `R` | Replace results with documents related to the selection |
 | `i` | Index sources now (in-app) |
 | `f` | Cycle source filter (all → markdown → pdf → …) |
 | `t` | Add tag to selected document |
@@ -272,6 +275,24 @@ show the top search results instead. If embeddings are unavailable, search
 gracefully falls back to BM25-only mode.
 
 Follow-up questions in the TUI keep recent Q&A turns in context, so asking "tell me more" or "what about the second one?" works as a conversation. The history resets when you clear the search.
+
+### Related documents
+
+`mindcli related <path>` and `mindcli related --id <document-id>` rank other
+documents using semantic similarity, lexical similarity, shared tags, and
+shared Markdown links. Each result includes a `Why:` line naming the signals
+that contributed to its rank. The selected source document is excluded, result
+counts are capped at 100, and `--limit` defaults to 10.
+
+Press `R` on a TUI result or preview to replace the result list with related
+documents. Relation reasons appear in each related document's preview.
+
+Semantic scoring is used when a compatible vector index and configured
+embedding provider are available. If vectors are missing or embedding fails,
+related discovery continues with local full-text, tag, and link signals; it
+does not require an LLM. Semantic scoring embeds bounded source text through
+the provider already configured for search, with the same privacy implications
+described in [PRIVACY.md](PRIVACY.md).
 
 ### Browser indexing
 
