@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,8 @@ import (
 // BrowserSource indexes browser history and bookmarks.
 type BrowserSource struct {
 	browsers []string
+	options  BrowserOptions
+	client   *http.Client
 }
 
 // NewBrowserSource creates a new browser history source.
@@ -31,7 +34,9 @@ func NewBrowserSource(browsers []string) *BrowserSource {
 	if len(browsers) == 0 {
 		browsers = []string{"chrome", "firefox", "safari"}
 	}
-	return &BrowserSource{browsers: browsers}
+	source := &BrowserSource{browsers: browsers}
+	source.SetOptions(DefaultBrowserOptions())
+	return source
 }
 
 // Name returns the source name.
@@ -126,7 +131,13 @@ func (b *BrowserSource) ParseDocuments(ctx context.Context, file FileInfo) ([]*s
 	if err != nil {
 		return nil, err
 	}
-	return buildBrowserDocuments(file, browser, entries), nil
+	docs := retainBrowserDocuments(buildBrowserDocuments(file, browser, entries), b.options, time.Now())
+	if b.options.IncludeContent {
+		if err := b.enrichBrowserDocuments(ctx, docs); err != nil {
+			return nil, err
+		}
+	}
+	return docs, nil
 }
 
 // ReconciliationScope identifies all virtual documents owned by one browser
