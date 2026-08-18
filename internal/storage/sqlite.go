@@ -346,6 +346,52 @@ func (d *DB) ListDocuments(ctx context.Context, source Source) ([]*Document, err
 	return docs, nil
 }
 
+// ListRecentDocuments returns documents whose indexed or source-modified time
+// falls within [after, before), newest activity first. A zero bound is omitted.
+func (d *DB) ListRecentDocuments(ctx context.Context, after, before time.Time, limit int) ([]*Document, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	query := `
+		SELECT id, source, path, title, content, preview, metadata, content_hash, indexed_at, modified_at
+		FROM documents
+		WHERE 1 = 1
+	`
+	var args []any
+	if !after.IsZero() {
+		query += ` AND (indexed_at >= ? OR modified_at >= ?)`
+		args = append(args, after.UTC(), after.UTC())
+	}
+	if !before.IsZero() {
+		query += ` AND indexed_at < ? AND modified_at < ?`
+		args = append(args, before.UTC(), before.UTC())
+	}
+	query += `
+		ORDER BY CASE WHEN indexed_at > modified_at THEN indexed_at ELSE modified_at END DESC
+		LIMIT ?
+	`
+	args = append(args, limit)
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying recent documents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	docs := make([]*Document, 0, limit)
+	for rows.Next() {
+		doc, err := d.scanDocumentRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating recent documents: %w", err)
+	}
+	return docs, nil
+}
+
 // CountDocuments returns the total number of documents.
 func (d *DB) CountDocuments(ctx context.Context) (int, error) {
 	var count int
