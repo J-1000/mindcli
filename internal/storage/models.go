@@ -16,7 +16,52 @@ const (
 	SourceEmail     Source = "email"
 	SourceBrowser   Source = "browser"
 	SourceClipboard Source = "clipboard"
+	SourceHTML      Source = "html"
+	SourceDOCX      Source = "docx"
+	SourceEPUB      Source = "epub"
+	SourceOrg       Source = "org"
+	SourceCode      Source = "code"
 )
+
+// KnownSources returns every source accepted by public query surfaces in a
+// stable display order. The returned slice is independent and safe to modify.
+func KnownSources() []Source {
+	return []Source{
+		SourceMarkdown,
+		SourcePDF,
+		SourceEmail,
+		SourceBrowser,
+		SourceClipboard,
+		SourceHTML,
+		SourceDOCX,
+		SourceEPUB,
+		SourceOrg,
+		SourceCode,
+	}
+}
+
+// IsKnownSource reports whether source is a supported public source value.
+func IsKnownSource(source Source) bool {
+	for _, known := range KnownSources() {
+		if source == known {
+			return true
+		}
+	}
+	return false
+}
+
+// IsFileBackedSource reports whether documents from source must retain a
+// local backing artifact. Reconciled child documents use ingestion-scope
+// metadata so cleanup can check the owning artifact instead of a virtual path.
+func IsFileBackedSource(source Source) bool {
+	switch source {
+	case SourceMarkdown, SourcePDF, SourceEmail, SourceHTML, SourceDOCX,
+		SourceEPUB, SourceOrg, SourceCode:
+		return true
+	default:
+		return false
+	}
+}
 
 // Document represents an indexed document.
 type Document struct {

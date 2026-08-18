@@ -38,6 +38,21 @@ type SourcesConfig struct {
 	Email     EmailSourceConfig     `yaml:"email"`
 	Browser   BrowserSourceConfig   `yaml:"browser"`
 	Clipboard ClipboardSourceConfig `yaml:"clipboard"`
+	HTML      FileSourceConfig      `yaml:"html"`
+	DOCX      FileSourceConfig      `yaml:"docx"`
+	EPUB      FileSourceConfig      `yaml:"epub"`
+	Org       FileSourceConfig      `yaml:"org"`
+	Code      CodeSourceConfig      `yaml:"code"`
+}
+
+// FileSourceConfig configures a bounded local document source. Archive-backed
+// formats use MaxDecompressedBytes as a total expansion budget.
+type FileSourceConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	Paths                []string `yaml:"paths"`
+	Ignore               []string `yaml:"ignore"`
+	MaxFileBytes         int64    `yaml:"max_file_bytes"`
+	MaxDecompressedBytes int64    `yaml:"max_decompressed_bytes"`
 }
 
 // MarkdownSourceConfig configures markdown/notes indexing.
@@ -50,8 +65,15 @@ type MarkdownSourceConfig struct {
 
 // PDFSourceConfig configures PDF indexing.
 type PDFSourceConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Paths   []string `yaml:"paths"`
+	Enabled           bool     `yaml:"enabled"`
+	Paths             []string `yaml:"paths"`
+	OCREnabled        bool     `yaml:"ocr_enabled"`
+	OCRCommand        string   `yaml:"ocr_command"`
+	OCRRenderer       string   `yaml:"ocr_renderer"`
+	OCRLanguages      []string `yaml:"ocr_languages"`
+	OCRMaxPages       int      `yaml:"ocr_max_pages"`
+	OCRTimeoutSeconds int      `yaml:"ocr_timeout_seconds"`
+	OCRMinTextChars   int      `yaml:"ocr_min_text_chars"`
 }
 
 // EmailSourceConfig configures email indexing.
@@ -61,6 +83,19 @@ type EmailSourceConfig struct {
 	Formats              []string `yaml:"formats"`
 	Ignore               []string `yaml:"ignore"`
 	MaskSensitivePreview bool     `yaml:"mask_sensitive_preview"`
+	ExtractAttachments   bool     `yaml:"extract_attachments"`
+	MaxAttachmentBytes   int64    `yaml:"max_attachment_bytes"`
+	MaxDecompressedBytes int64    `yaml:"max_decompressed_bytes"`
+	MaxArchiveDepth      int      `yaml:"max_archive_depth"`
+}
+
+// CodeSourceConfig configures bounded source-code repository ingestion.
+type CodeSourceConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	Paths        []string `yaml:"paths"`
+	Ignore       []string `yaml:"ignore"`
+	MaxFileBytes int64    `yaml:"max_file_bytes"`
+	MaxFiles     int      `yaml:"max_files"`
 }
 
 // BrowserSourceConfig configures browser history indexing.
@@ -155,8 +190,15 @@ func DefaultForProfile(profile string) (*Config, error) {
 				Ignore:     []string{"node_modules", ".git", ".obsidian"},
 			},
 			PDF: PDFSourceConfig{
-				Enabled: true,
-				Paths:   []string{filepath.Join(homeDir, "Documents")},
+				Enabled:           true,
+				Paths:             []string{filepath.Join(homeDir, "Documents")},
+				OCREnabled:        false,
+				OCRCommand:        "tesseract",
+				OCRRenderer:       "pdftoppm",
+				OCRLanguages:      []string{"eng"},
+				OCRMaxPages:       25,
+				OCRTimeoutSeconds: 120,
+				OCRMinTextChars:   80,
 			},
 			Email: EmailSourceConfig{
 				Enabled:              false,
@@ -164,6 +206,10 @@ func DefaultForProfile(profile string) (*Config, error) {
 				Formats:              []string{"mbox", "maildir"},
 				Ignore:               []string{},
 				MaskSensitivePreview: true,
+				ExtractAttachments:   false,
+				MaxAttachmentBytes:   16 << 20,
+				MaxDecompressedBytes: 64 << 20,
+				MaxArchiveDepth:      1,
 			},
 			Browser: BrowserSourceConfig{
 				Enabled:               true,
@@ -181,6 +227,31 @@ func DefaultForProfile(profile string) (*Config, error) {
 				Enabled:       true,
 				RetentionDays: 30,
 				SkipPasswords: true,
+			},
+			HTML: FileSourceConfig{
+				MaxFileBytes:         16 << 20,
+				MaxDecompressedBytes: 32 << 20,
+				Ignore:               []string{".git", "node_modules"},
+			},
+			DOCX: FileSourceConfig{
+				MaxFileBytes:         64 << 20,
+				MaxDecompressedBytes: 128 << 20,
+				Ignore:               []string{".git", "node_modules"},
+			},
+			EPUB: FileSourceConfig{
+				MaxFileBytes:         64 << 20,
+				MaxDecompressedBytes: 128 << 20,
+				Ignore:               []string{".git", "node_modules"},
+			},
+			Org: FileSourceConfig{
+				MaxFileBytes:         16 << 20,
+				MaxDecompressedBytes: 16 << 20,
+				Ignore:               []string{".git", "node_modules"},
+			},
+			Code: CodeSourceConfig{
+				Ignore:       []string{".git", ".hg", ".svn", "node_modules", "vendor", "dist", "build", ".idea", ".vscode"},
+				MaxFileBytes: 1 << 20,
+				MaxFiles:     20000,
 			},
 		},
 		Embeddings: EmbeddingsConfig{
@@ -277,6 +348,46 @@ func (c *Config) Validate() error {
 	if c.Sources.Browser.RetentionDays < 1 {
 		return errors.New("sources.browser.retention_days must be at least 1")
 	}
+	for name, source := range map[string]FileSourceConfig{
+		"html": c.Sources.HTML,
+		"docx": c.Sources.DOCX,
+		"epub": c.Sources.EPUB,
+		"org":  c.Sources.Org,
+	} {
+		if source.MaxFileBytes < 1 {
+			return fmt.Errorf("sources.%s.max_file_bytes must be at least 1", name)
+		}
+		if source.MaxDecompressedBytes < 1 {
+			return fmt.Errorf("sources.%s.max_decompressed_bytes must be at least 1", name)
+		}
+	}
+	if c.Sources.PDF.OCRMaxPages < 1 {
+		return errors.New("sources.pdf.ocr_max_pages must be at least 1")
+	}
+	if c.Sources.PDF.OCRTimeoutSeconds < 1 {
+		return errors.New("sources.pdf.ocr_timeout_seconds must be at least 1")
+	}
+	if c.Sources.PDF.OCRMinTextChars < 0 {
+		return errors.New("sources.pdf.ocr_min_text_chars must not be negative")
+	}
+	if strings.TrimSpace(c.Sources.PDF.OCRCommand) == "" || strings.TrimSpace(c.Sources.PDF.OCRRenderer) == "" {
+		return errors.New("sources.pdf OCR command names must not be empty")
+	}
+	if c.Sources.Email.MaxAttachmentBytes < 1 {
+		return errors.New("sources.email.max_attachment_bytes must be at least 1")
+	}
+	if c.Sources.Email.MaxDecompressedBytes < 1 {
+		return errors.New("sources.email.max_decompressed_bytes must be at least 1")
+	}
+	if c.Sources.Email.MaxArchiveDepth < 0 {
+		return errors.New("sources.email.max_archive_depth must not be negative")
+	}
+	if c.Sources.Code.MaxFileBytes < 1 {
+		return errors.New("sources.code.max_file_bytes must be at least 1")
+	}
+	if c.Sources.Code.MaxFiles < 1 {
+		return errors.New("sources.code.max_files must be at least 1")
+	}
 	if c.Embeddings.Provider != "ollama" && c.Embeddings.Provider != "openai" {
 		return errors.New("embeddings.provider must be 'ollama' or 'openai'")
 	}
@@ -340,6 +451,11 @@ func expandConfigPaths(cfg *Config) {
 	cfg.Sources.Markdown.Paths = expandUserPaths(cfg.Sources.Markdown.Paths)
 	cfg.Sources.PDF.Paths = expandUserPaths(cfg.Sources.PDF.Paths)
 	cfg.Sources.Email.Paths = expandUserPaths(cfg.Sources.Email.Paths)
+	cfg.Sources.HTML.Paths = expandUserPaths(cfg.Sources.HTML.Paths)
+	cfg.Sources.DOCX.Paths = expandUserPaths(cfg.Sources.DOCX.Paths)
+	cfg.Sources.EPUB.Paths = expandUserPaths(cfg.Sources.EPUB.Paths)
+	cfg.Sources.Org.Paths = expandUserPaths(cfg.Sources.Org.Paths)
+	cfg.Sources.Code.Paths = expandUserPaths(cfg.Sources.Code.Paths)
 }
 
 func expandUserPaths(paths []string) []string {
@@ -535,6 +651,13 @@ func applyEnvOverrides(cfg *Config) {
 	// Sources: pdf
 	setBoolFromEnv("MINDCLI_SOURCES_PDF_ENABLED", &cfg.Sources.PDF.Enabled)
 	setCSVFromEnv("MINDCLI_SOURCES_PDF_PATHS", &cfg.Sources.PDF.Paths)
+	setBoolFromEnv("MINDCLI_SOURCES_PDF_OCR_ENABLED", &cfg.Sources.PDF.OCREnabled)
+	setStringFromEnv("MINDCLI_SOURCES_PDF_OCR_COMMAND", &cfg.Sources.PDF.OCRCommand)
+	setStringFromEnv("MINDCLI_SOURCES_PDF_OCR_RENDERER", &cfg.Sources.PDF.OCRRenderer)
+	setCSVFromEnv("MINDCLI_SOURCES_PDF_OCR_LANGUAGES", &cfg.Sources.PDF.OCRLanguages)
+	setIntFromEnv("MINDCLI_SOURCES_PDF_OCR_MAX_PAGES", &cfg.Sources.PDF.OCRMaxPages)
+	setIntFromEnv("MINDCLI_SOURCES_PDF_OCR_TIMEOUT_SECONDS", &cfg.Sources.PDF.OCRTimeoutSeconds)
+	setIntFromEnv("MINDCLI_SOURCES_PDF_OCR_MIN_TEXT_CHARS", &cfg.Sources.PDF.OCRMinTextChars)
 
 	// Sources: email
 	setBoolFromEnv("MINDCLI_SOURCES_EMAIL_ENABLED", &cfg.Sources.Email.Enabled)
@@ -542,6 +665,21 @@ func applyEnvOverrides(cfg *Config) {
 	setCSVFromEnv("MINDCLI_SOURCES_EMAIL_FORMATS", &cfg.Sources.Email.Formats)
 	setCSVFromEnv("MINDCLI_SOURCES_EMAIL_IGNORE", &cfg.Sources.Email.Ignore)
 	setBoolFromEnv("MINDCLI_SOURCES_EMAIL_MASK_SENSITIVE_PREVIEW", &cfg.Sources.Email.MaskSensitivePreview)
+	setBoolFromEnv("MINDCLI_SOURCES_EMAIL_EXTRACT_ATTACHMENTS", &cfg.Sources.Email.ExtractAttachments)
+	setInt64FromEnv("MINDCLI_SOURCES_EMAIL_MAX_ATTACHMENT_BYTES", &cfg.Sources.Email.MaxAttachmentBytes)
+	setInt64FromEnv("MINDCLI_SOURCES_EMAIL_MAX_DECOMPRESSED_BYTES", &cfg.Sources.Email.MaxDecompressedBytes)
+	setIntFromEnv("MINDCLI_SOURCES_EMAIL_MAX_ARCHIVE_DEPTH", &cfg.Sources.Email.MaxArchiveDepth)
+
+	setFileSourceEnv("HTML", &cfg.Sources.HTML)
+	setFileSourceEnv("DOCX", &cfg.Sources.DOCX)
+	setFileSourceEnv("EPUB", &cfg.Sources.EPUB)
+	setFileSourceEnv("ORG", &cfg.Sources.Org)
+
+	setBoolFromEnv("MINDCLI_SOURCES_CODE_ENABLED", &cfg.Sources.Code.Enabled)
+	setCSVFromEnv("MINDCLI_SOURCES_CODE_PATHS", &cfg.Sources.Code.Paths)
+	setCSVFromEnv("MINDCLI_SOURCES_CODE_IGNORE", &cfg.Sources.Code.Ignore)
+	setInt64FromEnv("MINDCLI_SOURCES_CODE_MAX_FILE_BYTES", &cfg.Sources.Code.MaxFileBytes)
+	setIntFromEnv("MINDCLI_SOURCES_CODE_MAX_FILES", &cfg.Sources.Code.MaxFiles)
 
 	// Sources: browser
 	setBoolFromEnv("MINDCLI_SOURCES_BROWSER_ENABLED", &cfg.Sources.Browser.Enabled)
@@ -563,6 +701,15 @@ func applyEnvOverrides(cfg *Config) {
 	// Privacy
 	setCSVFromEnv("MINDCLI_PRIVACY_REDACT_PATTERNS", &cfg.Privacy.RedactPatterns)
 	setBoolFromEnv("MINDCLI_PRIVACY_REDACT_CONTENT", &cfg.Privacy.RedactContent)
+}
+
+func setFileSourceEnv(prefix string, source *FileSourceConfig) {
+	prefix = "MINDCLI_SOURCES_" + prefix
+	setBoolFromEnv(prefix+"_ENABLED", &source.Enabled)
+	setCSVFromEnv(prefix+"_PATHS", &source.Paths)
+	setCSVFromEnv(prefix+"_IGNORE", &source.Ignore)
+	setInt64FromEnv(prefix+"_MAX_FILE_BYTES", &source.MaxFileBytes)
+	setInt64FromEnv(prefix+"_MAX_DECOMPRESSED_BYTES", &source.MaxDecompressedBytes)
 }
 
 func setStringFromEnv(name string, dst *string) {
