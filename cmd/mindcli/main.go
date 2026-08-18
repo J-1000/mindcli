@@ -587,9 +587,16 @@ func runExport(args []string) error {
 	var w io.Writer = os.Stdout
 	var outputFile *os.File
 	if *output != "" {
-		f, err := os.Create(*output)
+		f, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("creating output file: %w", err)
+		}
+		// OpenFile preserves permissions on an existing destination. Search
+		// exports can contain private indexed content, so tighten it before
+		// writing as well as using a private creation mode.
+		if err := f.Chmod(0o600); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("protecting output file: %w", err)
 		}
 		outputFile = f
 		w = f
