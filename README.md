@@ -64,6 +64,7 @@ mindcli reindex                              # Full rebuild (e.g. after model ch
 mindcli reindex -paths ~/notes               # Full rebuild for specific paths
 mindcli watch                                # Watch directories for changes
 mindcli search "Go concurrency"              # Search and print results
+mindcli search 'tag:project after:2026-07-01 "launch plan"'
 mindcli stats                                # Show index statistics
 mindcli clean                                # Remove docs whose files are gone
 mindcli doctor                               # Check config and service health
@@ -232,6 +233,36 @@ MindCLI uses a hybrid search approach:
 4. **Reciprocal Rank Fusion** merges both result sets into a single ranked list
 
 Natural language queries like `"what did I write about Go in my notes last week"` are parsed to filter by source and time automatically.
+
+### Structured query filters
+
+Explicit filters provide predictable, composable searches in `search`,
+`export`, `ask`, the TUI, and saved smart-collection queries:
+
+```text
+source:email tag:project after:2026-07-01 "launch plan"
+collection:reading domain:arxiv.org -tag:archived
+path:work/ type:pdf before:2025-01-01
+source:browser kind:bookmark this week databases
+```
+
+Supported filters are `source:` (or `type:`), `tag:`, `-tag:`,
+`collection:`, `after:`, `before:`, `path:`, `domain:`, and `kind:`. Dates
+accept `YYYY-MM-DD` or RFC 3339. `after:` is inclusive and `before:` is
+exclusive. Repeated sources, domains, kinds, and collections are alternatives;
+positive tags and paths are cumulative. Domain filters include subdomains.
+
+Double quotes make an exact phrase. Quote a filter value that contains spaces,
+such as `tag:"Project Alpha"`. A leading `-` excludes a word or quoted phrase,
+as in `-draft -"old version"`. A backslash escapes the following character, so
+`launch\ plan` is an exact phrase and `foo\:bar` searches for a literal colon.
+Malformed dates, unknown filter names, unterminated quotes, and incomplete
+escapes produce an error.
+
+Structured filters are parsed before natural-language conveniences and take
+precedence when they overlap. For example, `source:email in my notes` searches
+email, and `after:2026-07-01 last week` uses the explicit date. The TUI shows
+every active filter beside the result count.
 
 When the query intent is "answer" or "summarize" and an LLM backend is
 available, MindCLI generates a RAG-style answer from the top search results with
