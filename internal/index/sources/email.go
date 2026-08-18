@@ -2,21 +2,27 @@ package sources
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/J-1000/mindcli/internal/storage"
 )
@@ -27,6 +33,25 @@ type EmailSource struct {
 	formats              []string
 	ignore               []string
 	maskSensitivePreview bool
+	attachmentOptions    EmailAttachmentOptions
+}
+
+// EmailAttachmentOptions bounds the optional local extraction of textual
+// attachments. ArchiveDepth 1 permits one DOCX/EPUB container; zero disables
+// archive-backed attachment formats.
+type EmailAttachmentOptions struct {
+	Enabled              bool
+	MaxAttachmentBytes   int64
+	MaxDecompressedBytes int64
+	MaxArchiveDepth      int
+}
+
+func DefaultEmailAttachmentOptions() EmailAttachmentOptions {
+	return EmailAttachmentOptions{
+		MaxAttachmentBytes:   16 << 20,
+		MaxDecompressedBytes: 64 << 20,
+		MaxArchiveDepth:      1,
+	}
 }
 
 // NewEmailSource creates a new email source.
@@ -38,6 +63,7 @@ func NewEmailSource(paths, formats []string) *EmailSource {
 		paths:                paths,
 		formats:              formats,
 		maskSensitivePreview: true,
+		attachmentOptions:    DefaultEmailAttachmentOptions(),
 	}
 }
 
@@ -49,6 +75,21 @@ func (e *EmailSource) SetIgnore(patterns []string) {
 // SetMaskSensitivePreview controls redaction in preview/metadata fields.
 func (e *EmailSource) SetMaskSensitivePreview(enabled bool) {
 	e.maskSensitivePreview = enabled
+}
+
+// SetAttachmentOptions enables and bounds attachment extraction.
+func (e *EmailSource) SetAttachmentOptions(options EmailAttachmentOptions) {
+	defaults := DefaultEmailAttachmentOptions()
+	if options.MaxAttachmentBytes < 1 {
+		options.MaxAttachmentBytes = defaults.MaxAttachmentBytes
+	}
+	if options.MaxDecompressedBytes < 1 {
+		options.MaxDecompressedBytes = defaults.MaxDecompressedBytes
+	}
+	if options.MaxArchiveDepth < 0 {
+		options.MaxArchiveDepth = 0
+	}
+	e.attachmentOptions = options
 }
 
 // Name returns the source name.
@@ -174,6 +215,60 @@ func (e *EmailSource) Parse(ctx context.Context, file FileInfo) (*storage.Docume
 	}
 }
 
+// ParseDocuments returns the email body plus independently searchable textual
+// attachments when extraction is explicitly enabled.
+func (e *EmailSource) ParseDocuments(ctx context.Context, file FileInfo) ([]*storage.Document, error) {
+	if !e.attachmentOptions.Enabled {
+		doc, err := e.Parse(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		return []*storage.Document{doc}, nil
+	}
+	messages, err := e.readMessagesWithAttachments(file)
+	if err != nil {
+		return nil, err
+	}
+	base := buildEmailDocument(file, messages, e.maskSensitivePreview)
+	docs := []*storage.Document{base}
+	remaining := e.attachmentOptions.MaxDecompressedBytes
+	var extractionErrors []string
+	for messageIndex, message := range messages {
+		for attachmentIndex, attachment := range message.AttachmentParts {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			doc, consumed, extractErr := e.buildAttachmentDocument(
+				ctx, file, message, messageIndex, attachment, attachmentIndex, remaining,
+			)
+			if extractErr != nil {
+				extractionErrors = append(extractionErrors, attachment.Name+": "+extractErr.Error())
+				continue
+			}
+			remaining -= consumed
+			docs = append(docs, doc)
+		}
+	}
+	if len(extractionErrors) > 0 {
+		base.Metadata["attachment_extraction_warning"] = strings.Join(extractionErrors, "; ")
+		base.Metadata["attachment_extraction_failures"] = strconv.Itoa(len(extractionErrors))
+	}
+	base.Metadata["extracted_attachments"] = strconv.Itoa(len(docs) - 1)
+	return docs, nil
+}
+
+func (e *EmailSource) ReconciliationScope(file FileInfo) string { return normalizePath(file.Path) }
+
+func (e *EmailSource) IsDocumentInScope(file FileInfo, doc *storage.Document) bool {
+	if doc == nil || doc.Source != storage.SourceEmail {
+		return false
+	}
+	return doc.Metadata[IngestionScopeMetadata] == e.ReconciliationScope(file) ||
+		normalizePath(doc.Metadata["original_path"]) == normalizePath(file.Path) ||
+		normalizePath(doc.Metadata["parent_path"]) == normalizePath(file.Path) ||
+		normalizePath(doc.Path) == normalizePath(file.Path)
+}
+
 func (e *EmailSource) isEmailFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
@@ -282,16 +377,109 @@ func (e *EmailSource) parseSingleEmail(file FileInfo) (*storage.Document, error)
 
 // emailMessage holds parsed email data.
 type emailMessage struct {
-	Subject     string
-	From        string
-	To          string
-	Date        time.Time
-	Body        string
-	Attachments []string
+	Subject         string
+	From            string
+	To              string
+	MessageID       string
+	Date            time.Time
+	Body            string
+	Attachments     []string
+	AttachmentParts []emailAttachment
+}
+
+type emailAttachment struct {
+	Name      string
+	MediaType string
+	Data      []byte
+	Error     string
+}
+
+func (e *EmailSource) readMessagesWithAttachments(file FileInfo) ([]emailMessage, error) {
+	parse := func(reader io.Reader) (emailMessage, error) {
+		return parseEmailMessageWithOptions(reader, true, e.attachmentOptions.MaxAttachmentBytes)
+	}
+	switch strings.ToLower(filepath.Ext(file.Path)) {
+	case ".mbox":
+		f, err := os.Open(file.Path)
+		if err != nil {
+			return nil, fmt.Errorf("opening mbox: %w", err)
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+		var messages []emailMessage
+		var current strings.Builder
+		inMessage := false
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "From ") && (current.Len() == 0 || inMessage) {
+				if inMessage && current.Len() > 0 {
+					if message, parseErr := parse(strings.NewReader(current.String())); parseErr == nil {
+						messages = append(messages, message)
+					}
+					current.Reset()
+				}
+				inMessage = true
+				continue
+			}
+			if inMessage {
+				current.WriteString(line)
+				current.WriteByte('\n')
+			}
+		}
+		if current.Len() > 0 {
+			if message, parseErr := parse(strings.NewReader(current.String())); parseErr == nil {
+				messages = append(messages, message)
+			}
+		}
+		scanErr := scanner.Err()
+		closeErr := f.Close()
+		if scanErr != nil {
+			return nil, fmt.Errorf("reading mbox: %w", scanErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("closing mbox: %w", closeErr)
+		}
+		return messages, nil
+	case ".emlx":
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			return nil, fmt.Errorf("reading emlx: %w", err)
+		}
+		content := string(data)
+		if index := strings.Index(content, "\n"); index >= 0 {
+			content = content[index+1:]
+		}
+		if index := strings.Index(content, "<?xml"); index >= 0 {
+			content = content[:index]
+		}
+		message, err := parse(strings.NewReader(content))
+		if err != nil {
+			return nil, fmt.Errorf("parsing emlx message: %w", err)
+		}
+		return []emailMessage{message}, nil
+	default:
+		f, err := os.Open(file.Path)
+		if err != nil {
+			return nil, fmt.Errorf("opening email: %w", err)
+		}
+		message, parseErr := parse(f)
+		closeErr := f.Close()
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing email: %w", parseErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("closing email: %w", closeErr)
+		}
+		return []emailMessage{message}, nil
+	}
 }
 
 // parseEmailMessage parses a single RFC 2822 email message.
 func parseEmailMessage(r io.Reader) (emailMessage, error) {
+	return parseEmailMessageWithOptions(r, false, 0)
+}
+
+func parseEmailMessageWithOptions(r io.Reader, captureAttachments bool, maxAttachmentBytes int64) (emailMessage, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return emailMessage{}, err
@@ -301,13 +489,331 @@ func parseEmailMessage(r io.Reader) (emailMessage, error) {
 	em.Subject = decodeHeader(msg.Header.Get("Subject"))
 	em.From = decodeHeader(msg.Header.Get("From"))
 	em.To = decodeHeader(msg.Header.Get("To"))
+	em.MessageID = strings.TrimSpace(msg.Header.Get("Message-ID"))
 
 	if dateStr := msg.Header.Get("Date"); dateStr != "" {
 		em.Date, _ = mail.ParseDate(dateStr)
 	}
 
-	em.Body, em.Attachments = extractBodyAndAttachments(msg)
+	if captureAttachments {
+		em.Body, em.Attachments, em.AttachmentParts = extractMIMEContent(msg, maxAttachmentBytes)
+	} else {
+		em.Body, em.Attachments = extractBodyAndAttachments(msg)
+	}
 	return em, nil
+}
+
+type mimeExtractResult struct {
+	plain       []string
+	html        []string
+	names       []string
+	attachments []emailAttachment
+}
+
+func extractMIMEContent(msg *mail.Message, maxAttachmentBytes int64) (string, []string, []emailAttachment) {
+	result := extractMIMEEntity(textproto.MIMEHeader(msg.Header), msg.Body, maxAttachmentBytes, 0)
+	parts := result.plain
+	if len(parts) == 0 {
+		parts = result.html
+	}
+	names := uniqueSortedStrings(result.names)
+	return strings.TrimSpace(strings.Join(parts, "\n\n")), names, result.attachments
+}
+
+func extractMIMEEntity(header textproto.MIMEHeader, body io.Reader, maxAttachmentBytes int64, depth int) mimeExtractResult {
+	if depth > 16 {
+		return mimeExtractResult{}
+	}
+	contentType := header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "text/plain"
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = "application/octet-stream"
+	}
+	mediaType = strings.ToLower(mediaType)
+	if strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return mimeExtractResult{}
+		}
+		reader := multipart.NewReader(body, boundary)
+		var result mimeExtractResult
+		for {
+			part, partErr := reader.NextPart()
+			if partErr != nil {
+				break
+			}
+			child := extractMIMEEntity(part.Header, part, maxAttachmentBytes, depth+1)
+			_ = part.Close()
+			result.plain = append(result.plain, child.plain...)
+			result.html = append(result.html, child.html...)
+			result.names = append(result.names, child.names...)
+			result.attachments = append(result.attachments, child.attachments...)
+		}
+		return result
+	}
+
+	filename := strings.TrimSpace(decodeHeader(mimeFilename(header)))
+	disposition, _, _ := mime.ParseMediaType(header.Get("Content-Disposition"))
+	isAttachment := filename != "" || strings.EqualFold(disposition, "attachment")
+	if isAttachment {
+		if filename == "" {
+			filename = "attachment" + extensionForMediaType(mediaType)
+		}
+		result := mimeExtractResult{names: []string{filename}}
+		if !isSupportedEmailAttachment(filename, mediaType) {
+			return result
+		}
+		data, readErr := readMIMEBodyBounded(header, body, maxAttachmentBytes)
+		attachment := emailAttachment{Name: filename, MediaType: mediaType, Data: data}
+		if readErr != nil {
+			attachment.Error = readErr.Error()
+			attachment.Data = nil
+		}
+		result.attachments = append(result.attachments, attachment)
+		return result
+	}
+
+	if mediaType != "text/plain" && mediaType != "text/html" && mediaType != "application/xhtml+xml" {
+		return mimeExtractResult{}
+	}
+	data, readErr := readMIMEBodyBounded(header, body, 1<<20)
+	if readErr != nil {
+		return mimeExtractResult{}
+	}
+	text := strings.TrimSpace(string(data))
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		text = stripHTML(text)
+		if text == "" {
+			return mimeExtractResult{}
+		}
+		return mimeExtractResult{html: []string{text}}
+	}
+	if text == "" {
+		return mimeExtractResult{}
+	}
+	return mimeExtractResult{plain: []string{text}}
+}
+
+func readMIMEBodyBounded(header textproto.MIMEHeader, body io.Reader, maxBytes int64) ([]byte, error) {
+	decoded := body
+	switch strings.ToLower(strings.TrimSpace(header.Get("Content-Transfer-Encoding"))) {
+	case "base64":
+		decoded = base64.NewDecoder(base64.StdEncoding, body)
+	case "quoted-printable":
+		decoded = quotedprintable.NewReader(body)
+	}
+	return readBounded(decoded, maxBytes)
+}
+
+func mimeFilename(header textproto.MIMEHeader) string {
+	for _, field := range []string{"Content-Disposition", "Content-Type"} {
+		_, params, err := mime.ParseMediaType(header.Get(field))
+		if err != nil {
+			continue
+		}
+		for _, name := range []string{"filename", "name"} {
+			if value := strings.TrimSpace(params[name]); value != "" {
+				return filepath.Base(value)
+			}
+		}
+	}
+	return ""
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]string)
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			seen[strings.ToLower(value)] = value
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for _, value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func extensionForMediaType(mediaType string) string {
+	switch mediaType {
+	case "text/html", "application/xhtml+xml":
+		return ".html"
+	case "application/pdf":
+		return ".pdf"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return ".docx"
+	case "application/epub+zip":
+		return ".epub"
+	case "text/plain":
+		return ".txt"
+	default:
+		return ""
+	}
+}
+
+func isSupportedEmailAttachment(name, mediaType string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".html", ".htm", ".mhtml", ".mht", ".webarchive", ".docx", ".epub", ".org",
+		".txt", ".md", ".markdown", ".pdf", ".csv", ".json", ".xml", ".yaml", ".yml":
+		return true
+	}
+	return strings.HasPrefix(mediaType, "text/")
+}
+
+func (e *EmailSource) buildAttachmentDocument(
+	ctx context.Context,
+	file FileInfo,
+	message emailMessage,
+	messageIndex int,
+	attachment emailAttachment,
+	attachmentIndex int,
+	remaining int64,
+) (*storage.Document, int64, error) {
+	if attachment.Error != "" {
+		return nil, 0, fmt.Errorf("reading MIME attachment: %s", attachment.Error)
+	}
+	if len(attachment.Data) == 0 {
+		return nil, 0, fmt.Errorf("attachment is empty")
+	}
+	ext := strings.ToLower(filepath.Ext(attachment.Name))
+	if ext == "" {
+		ext = extensionForMediaType(attachment.MediaType)
+	}
+	archiveDepth := 0
+	consumed := int64(len(attachment.Data))
+	if ext == ".docx" || ext == ".epub" || ext == ".mhtml" || ext == ".mht" || ext == ".webarchive" {
+		archiveDepth = 1
+		if e.attachmentOptions.MaxArchiveDepth < archiveDepth {
+			return nil, 0, fmt.Errorf("archive depth %d exceeds configured maximum %d", archiveDepth, e.attachmentOptions.MaxArchiveDepth)
+		}
+	}
+	if ext == ".docx" || ext == ".epub" {
+		archive, _, err := openBoundedZIP(attachment.Data, remaining)
+		if err != nil {
+			return nil, 0, fmt.Errorf("opening attachment archive: %w", err)
+		}
+		consumed = 0
+		for _, entry := range archive.File {
+			if entry.UncompressedSize64 > uint64(remaining-consumed) {
+				return nil, 0, fmt.Errorf("expanded archive exceeds remaining %d-byte limit", remaining)
+			}
+			consumed += int64(entry.UncompressedSize64)
+		}
+	}
+	if consumed > remaining {
+		return nil, 0, fmt.Errorf("content requires %d bytes; %d-byte decompression budget remains", consumed, remaining)
+	}
+
+	content, extractedMetadata, err := extractEmailAttachment(ctx, attachment, ext, remaining)
+	if err != nil {
+		return nil, 0, err
+	}
+	if e.maskSensitivePreview {
+		content = maskSensitiveText(content)
+	}
+	messageIdentity := message.MessageID
+	if messageIdentity == "" {
+		messageIdentity = message.Subject + "\x00" + message.Date.UTC().Format(time.RFC3339) + "\x00" + strconv.Itoa(messageIndex)
+	}
+	title := attachment.Name
+	if strings.TrimSpace(message.Subject) != "" {
+		title = message.Subject + " — " + attachment.Name
+	}
+	metadata := map[string]string{
+		"format":            strings.TrimPrefix(ext, "."),
+		"original_path":     file.Path,
+		"parent_path":       file.Path,
+		"attachment_name":   attachment.Name,
+		"content_type":      attachment.MediaType,
+		"location":          fmt.Sprintf("message:%d/attachment:%d", messageIndex+1, attachmentIndex+1),
+		"extraction_method": "attachment_text",
+		"archive_depth":     strconv.Itoa(archiveDepth),
+	}
+	for key, value := range extractedMetadata {
+		if value != "" && key != "original_path" {
+			metadata[key] = value
+		}
+	}
+	if message.MessageID != "" {
+		metadata["message_id"] = message.MessageID
+	}
+	return &storage.Document{
+		ID: stableDocumentID(
+			storage.SourceEmail,
+			file.Path,
+			messageIdentity,
+			strconv.Itoa(attachmentIndex),
+			attachment.Name,
+		),
+		Source:      storage.SourceEmail,
+		Path:        file.Path,
+		Title:       title,
+		Content:     content,
+		Preview:     generatePreview(content, 500),
+		Metadata:    metadata,
+		ContentHash: hashContent(content),
+		IndexedAt:   time.Now(),
+		ModifiedAt:  time.Unix(file.ModifiedAt, 0),
+	}, consumed, nil
+}
+
+func extractEmailAttachment(ctx context.Context, attachment emailAttachment, ext string, maxDecompressedBytes int64) (string, map[string]string, error) {
+	metadata := map[string]string{}
+	switch ext {
+	case ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".yaml", ".yml":
+		if !utf8.Valid(attachment.Data) || bytes.IndexByte(attachment.Data, 0) >= 0 {
+			return "", nil, fmt.Errorf("text attachment is not valid UTF-8")
+		}
+		metadata["extraction_method"] = "plain_text"
+		return strings.TrimSpace(string(attachment.Data)), metadata, nil
+	}
+
+	tempFile, err := os.CreateTemp("", "mindcli-attachment-*"+ext)
+	if err != nil {
+		return "", nil, fmt.Errorf("creating private attachment file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := tempFile.Write(attachment.Data); err != nil {
+		_ = tempFile.Close()
+		return "", nil, fmt.Errorf("writing private attachment file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return "", nil, fmt.Errorf("closing private attachment file: %w", err)
+	}
+	file := FileInfo{Path: tempPath, Size: int64(len(attachment.Data)), ModifiedAt: time.Now().Unix()}
+	var doc *storage.Document
+	switch ext {
+	case ".html", ".htm", ".mhtml", ".mht", ".webarchive":
+		doc, err = NewHTMLSource(nil, nil, int64(len(attachment.Data)), maxDecompressedBytes).Parse(ctx, file)
+	case ".docx":
+		doc, err = NewDOCXSource(nil, nil, int64(len(attachment.Data)), maxDecompressedBytes).Parse(ctx, file)
+	case ".epub":
+		doc, err = NewEPUBSource(nil, nil, int64(len(attachment.Data)), maxDecompressedBytes).Parse(ctx, file)
+	case ".org":
+		doc, err = NewOrgSource(nil, nil, int64(len(attachment.Data))).Parse(ctx, file)
+	case ".pdf":
+		doc, err = NewPDFSource(nil, nil).Parse(ctx, file)
+	default:
+		if strings.HasPrefix(attachment.MediaType, "text/") && utf8.Valid(attachment.Data) && bytes.IndexByte(attachment.Data, 0) < 0 {
+			metadata["extraction_method"] = "plain_text"
+			return strings.TrimSpace(string(attachment.Data)), metadata, nil
+		}
+		return "", nil, fmt.Errorf("unsupported attachment format %q", ext)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	for key, value := range doc.Metadata {
+		metadata[key] = value
+	}
+	return doc.Content, metadata, nil
 }
 
 // extractBodyAndAttachments extracts plain text and attachment names from an email body.
@@ -431,6 +937,13 @@ func buildEmailDocument(file FileInfo, messages []emailMessage, maskSensitivePre
 	var sb strings.Builder
 	var title string
 	metadata := make(map[string]string)
+	metadata["format"] = strings.TrimPrefix(strings.ToLower(filepath.Ext(file.Path)), ".")
+	if metadata["format"] == "" {
+		metadata["format"] = "maildir"
+	}
+	metadata["original_path"] = file.Path
+	metadata["location"] = "message"
+	metadata["extraction_method"] = "mime_text"
 	attachments := make(map[string]struct{})
 
 	for i, msg := range messages {

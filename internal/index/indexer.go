@@ -132,6 +132,12 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		)
 		emailSrc.SetIgnore(cfg.Sources.Email.Ignore)
 		emailSrc.SetMaskSensitivePreview(cfg.Sources.Email.MaskSensitivePreview)
+		emailSrc.SetAttachmentOptions(sources.EmailAttachmentOptions{
+			Enabled:              cfg.Sources.Email.ExtractAttachments,
+			MaxAttachmentBytes:   cfg.Sources.Email.MaxAttachmentBytes,
+			MaxDecompressedBytes: cfg.Sources.Email.MaxDecompressedBytes,
+			MaxArchiveDepth:      cfg.Sources.Email.MaxArchiveDepth,
+		})
 		srcs = append(srcs, emailSrc)
 	}
 
