@@ -105,6 +105,9 @@ func (c *LLMClient) openAIGenerateStream(ctx context.Context, prompt string, onC
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
@@ -123,6 +126,9 @@ func (c *LLMClient) openAIGenerateStream(ctx context.Context, prompt string, onC
 				onChunk(token, false)
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("reading stream: %w", err)

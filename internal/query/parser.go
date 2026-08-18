@@ -356,8 +356,14 @@ func (c *LLMClient) GenerateStream(ctx context.Context, prompt string, onChunk f
 
 	decoder := json.NewDecoder(resp.Body)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var chunk ollamaGenerateResponse
 		if err := decoder.Decode(&chunk); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			if err == io.EOF {
 				return nil
 			}
