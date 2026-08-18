@@ -188,6 +188,17 @@ func migrationList() []migration {
 			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_documents_state ON session_documents(session_id, state, added_at)`,
+	}}, {version: 3, stmts: []string{
+		`ALTER TABLE collections ADD COLUMN last_viewed_at DATETIME`,
+		`CREATE INDEX IF NOT EXISTS idx_collection_documents_added ON collection_documents(collection_id, added_at)`,
+		`CREATE TABLE IF NOT EXISTS collection_seen_documents (
+			collection_id TEXT NOT NULL,
+			document_id TEXT NOT NULL,
+			first_seen_at DATETIME NOT NULL,
+			PRIMARY KEY (collection_id, document_id),
+			FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+			FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+		)`,
 	}}}
 }
 
@@ -722,7 +733,8 @@ func generateID() string {
 func (d *DB) scanCollection(row *sql.Row) (*Collection, error) {
 	var c Collection
 	var createdAt time.Time
-	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt)
+	var lastViewedAt sql.NullTime
+	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt, &lastViewedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -730,6 +742,10 @@ func (d *DB) scanCollection(row *sql.Row) (*Collection, error) {
 		return nil, fmt.Errorf("scanning collection: %w", err)
 	}
 	c.CreatedAt = createdAt
+	if lastViewedAt.Valid {
+		viewed := lastViewedAt.Time
+		c.LastViewedAt = &viewed
+	}
 	return &c, nil
 }
 
@@ -757,7 +773,7 @@ func (d *DB) CreateCollection(ctx context.Context, c *Collection) error {
 // GetCollection retrieves a collection by ID.
 func (d *DB) GetCollection(ctx context.Context, id string) (*Collection, error) {
 	row := d.db.QueryRowContext(ctx,
-		`SELECT id, name, description, query, created_at FROM collections WHERE id = ?`, id,
+		`SELECT id, name, description, query, created_at, last_viewed_at FROM collections WHERE id = ?`, id,
 	)
 	return d.scanCollection(row)
 }
@@ -765,7 +781,7 @@ func (d *DB) GetCollection(ctx context.Context, id string) (*Collection, error) 
 // GetCollectionByName retrieves a collection by name.
 func (d *DB) GetCollectionByName(ctx context.Context, name string) (*Collection, error) {
 	row := d.db.QueryRowContext(ctx,
-		`SELECT id, name, description, query, created_at FROM collections WHERE name = ?`, name,
+		`SELECT id, name, description, query, created_at, last_viewed_at FROM collections WHERE name = ?`, name,
 	)
 	return d.scanCollection(row)
 }
@@ -773,7 +789,7 @@ func (d *DB) GetCollectionByName(ctx context.Context, name string) (*Collection,
 // ListCollections returns all collections ordered by name.
 func (d *DB) ListCollections(ctx context.Context) ([]*Collection, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, description, query, created_at FROM collections ORDER BY name`,
+		`SELECT id, name, description, query, created_at, last_viewed_at FROM collections ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing collections: %w", err)
@@ -784,10 +800,15 @@ func (d *DB) ListCollections(ctx context.Context) ([]*Collection, error) {
 	for rows.Next() {
 		var c Collection
 		var createdAt time.Time
-		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt); err != nil {
+		var lastViewedAt sql.NullTime
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt, &lastViewedAt); err != nil {
 			return nil, fmt.Errorf("scanning collection: %w", err)
 		}
 		c.CreatedAt = createdAt
+		if lastViewedAt.Valid {
+			viewed := lastViewedAt.Time
+			c.LastViewedAt = &viewed
+		}
 		collections = append(collections, &c)
 	}
 	return collections, rows.Err()
@@ -955,7 +976,7 @@ func (d *DB) CountCollectionDocuments(ctx context.Context, collectionID string) 
 // GetDocumentCollections returns all collections a document belongs to.
 func (d *DB) GetDocumentCollections(ctx context.Context, documentID string) ([]*Collection, error) {
 	sqlQuery := `
-		SELECT c.id, c.name, c.description, c.query, c.created_at
+		SELECT c.id, c.name, c.description, c.query, c.created_at, c.last_viewed_at
 		FROM collections c
 		INNER JOIN collection_documents cd ON c.id = cd.collection_id
 		WHERE cd.document_id = ?
@@ -971,10 +992,15 @@ func (d *DB) GetDocumentCollections(ctx context.Context, documentID string) ([]*
 	for rows.Next() {
 		var c Collection
 		var createdAt time.Time
-		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt); err != nil {
+		var lastViewedAt sql.NullTime
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Query, &createdAt, &lastViewedAt); err != nil {
 			return nil, fmt.Errorf("scanning collection: %w", err)
 		}
 		c.CreatedAt = createdAt
+		if lastViewedAt.Valid {
+			viewed := lastViewedAt.Time
+			c.LastViewedAt = &viewed
+		}
 		collections = append(collections, &c)
 	}
 	return collections, rows.Err()

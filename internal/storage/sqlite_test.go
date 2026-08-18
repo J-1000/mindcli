@@ -71,8 +71,8 @@ func TestMigrationVersionAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 2 {
-		t.Errorf("schemaVersion = %d, want 2", v)
+	if v != 3 {
+		t.Errorf("schemaVersion = %d, want 3", v)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -88,8 +88,8 @@ func TestMigrationVersionAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v2 != 2 {
-		t.Errorf("schemaVersion after re-open = %d, want 2", v2)
+	if v2 != 3 {
+		t.Errorf("schemaVersion after re-open = %d, want 3", v2)
 	}
 }
 

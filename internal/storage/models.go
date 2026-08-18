@@ -108,11 +108,12 @@ type Chunk struct {
 
 // Collection represents a named group of documents.
 type Collection struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	Query       string    `json:"query,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Description  string     `json:"description,omitempty"`
+	Query        string     `json:"query,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastViewedAt *time.Time `json:"last_viewed_at,omitempty"`
 }
 
 // ResearchSession is a named, explicitly persisted research conversation.
