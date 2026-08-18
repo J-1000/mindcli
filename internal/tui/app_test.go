@@ -350,6 +350,51 @@ func TestEphemeralConversationIsNotPersisted(t *testing.T) {
 	}
 }
 
+func TestCollectionBrowserShowsAndClearsNewActivity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	doc := &storage.Document{ID: "new-doc", Source: storage.SourceMarkdown, Path: "/new.md", Title: "New", ContentHash: "hash", IndexedAt: now, ModifiedAt: now}
+	if err := db.InsertDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	collection := &storage.Collection{Name: "reading"}
+	if err := db.CreateCollection(ctx, collection); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddToCollection(ctx, collection.ID, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	model := New(db, nil, nil, nil, privacy.Redactor{}, nil)
+	model.panel = PanelResults
+	model.results = []*storage.Document{doc}
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("collection browser did not load activity")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if model.collectionNewCounts[collection.ID] != 1 || !strings.Contains(model.renderCollectionsList(80, 20), "1 new") {
+		t.Fatalf("collection activity = %#v, rendered=%q", model.collectionNewCounts, model.renderCollectionsList(80, 20))
+	}
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("collection selection did not record view")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if model.collectionNewCounts[collection.ID] != 0 || !strings.Contains(model.statusMsg, "1 new since last view") {
+		t.Fatalf("viewed collection status = %q, activity=%#v", model.statusMsg, model.collectionNewCounts)
+	}
+	loaded, err := db.GetCollection(ctx, collection.ID)
+	if err != nil || loaded.LastViewedAt == nil {
+		t.Fatalf("collection last view = %+v, err=%v", loaded, err)
+	}
+}
+
 func TestModelUpdateError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
