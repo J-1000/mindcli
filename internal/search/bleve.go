@@ -98,7 +98,7 @@ func (b *BleveIndex) Index(ctx context.Context, doc *storage.Document) error {
 		Content:  doc.Content,
 		Source:   string(doc.Source),
 		Path:     doc.Path,
-		Tags:     doc.Metadata["tags"],
+		Tags:     doc.TagsString(),
 		Headings: doc.Metadata["headings"],
 	}
 

@@ -214,6 +214,13 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 				// Fast path: skip files whose mtime hasn't advanced.
 				existing, _ := idx.db.GetDocumentByPath(ctx, file.Path)
 				if !idx.force && existing != nil && existing.ModifiedAt.Unix() >= file.ModifiedAt {
+					if err := idx.refreshStoredTags(ctx, existing); err != nil {
+						if idx.progress != nil {
+							idx.progress.OnError(string(src.Name()), file.Path, err)
+						}
+						atomic.AddInt64(&errors, 1)
+						continue
+					}
 					atomic.AddInt64(&indexed, 1)
 					continue
 				}
@@ -229,6 +236,13 @@ func (idx *Indexer) indexSource(ctx context.Context, src sources.Source) (*Stats
 				}
 
 				idx.applyRedaction(doc)
+				if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
+					if idx.progress != nil {
+						idx.progress.OnError(string(src.Name()), file.Path, err)
+					}
+					atomic.AddInt64(&errors, 1)
+					continue
+				}
 
 				// Content-hash check: if the bytes are identical despite a
 				// newer mtime, refresh metadata but skip the expensive
@@ -314,6 +328,9 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 			return fmt.Errorf("parsing: %w", err)
 		}
 		idx.applyRedaction(doc)
+		if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
+			return fmt.Errorf("attaching stored tags: %w", err)
+		}
 
 		if err := idx.db.UpsertDocument(ctx, doc); err != nil {
 			return fmt.Errorf("storing: %w", err)
@@ -333,6 +350,34 @@ func (idx *Indexer) IndexFile(ctx context.Context, path string) error {
 	}
 
 	return fmt.Errorf("no source found for file: %s", path)
+}
+
+// refreshStoredTags keeps an unchanged document's metadata and search entry in
+// sync with tags stored in the normalized document_tags table. This also
+// repairs tag projections created by older MindCLI versions during an ordinary
+// incremental index pass.
+func (idx *Indexer) refreshStoredTags(ctx context.Context, doc *storage.Document) error {
+	previous := ""
+	if doc.Metadata != nil {
+		previous = doc.Metadata["stored_tags"]
+	}
+	if err := idx.db.AttachStoredTags(ctx, doc); err != nil {
+		return fmt.Errorf("attaching stored tags: %w", err)
+	}
+	current := ""
+	if doc.Metadata != nil {
+		current = doc.Metadata["stored_tags"]
+	}
+	if previous == current {
+		return nil
+	}
+	if err := idx.db.UpdateDocument(ctx, doc); err != nil {
+		return fmt.Errorf("storing tag projection: %w", err)
+	}
+	if err := idx.search.Index(ctx, doc); err != nil {
+		return fmt.Errorf("indexing tag projection: %w", err)
+	}
+	return nil
 }
 
 func statFileInfo(path string) (sources.FileInfo, error) {
