@@ -148,16 +148,24 @@ with its configured paths and settings.
 
 ## Configuration
 
-The default profile looks for `~/.config/mindcli/config.yaml`; named profiles
-use `~/.config/mindcli/profiles/NAME.yaml`. Run `mindcli config` (optionally
-after `--profile NAME`) to generate the active file. Existing configuration is
-preserved unless you explicitly pass `--force`; `mindcli config --path` prints
-the resolved location without writing.
+Configuration lives under the OS user-config directory. The default profile
+uses `mindcli/config.yaml` there, while named profiles use
+`mindcli/profiles/NAME.yaml`. Typical default-profile locations are
+`~/.config/mindcli/config.yaml` on Linux (or `$XDG_CONFIG_HOME` when set),
+`~/Library/Application Support/mindcli/config.yaml` on macOS, and
+`%AppData%\mindcli\config.yaml` on Windows. `MINDCLI_CONFIG_DIR` overrides the
+base directory.
+
+Run `mindcli config` (optionally after `--profile NAME`) to generate the active
+file. Existing configuration is preserved unless you explicitly pass
+`--force`; `mindcli config --path` prints the resolved location without
+writing. File watching starts only with `mindcli index -watch` or
+`mindcli watch`.
 
 Environment variables can override config values at runtime:
 
 - Profile/config/storage: `MINDCLI_PROFILE`, `MINDCLI_CONFIG_PATH`, `MINDCLI_CONFIG_DIR`, `MINDCLI_STORAGE_PATH`
-- Indexing/search: `MINDCLI_INDEXING_WORKERS`, `MINDCLI_INDEXING_WATCH`, `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
+- Indexing/search: `MINDCLI_INDEXING_WORKERS`, `MINDCLI_SEARCH_HYBRID_WEIGHT`, `MINDCLI_SEARCH_RESULTS_LIMIT`
 - Embeddings/LLM: `MINDCLI_EMBEDDINGS_PROVIDER`, `MINDCLI_EMBEDDINGS_MODEL`, `MINDCLI_EMBEDDINGS_LLM_MODEL`, `MINDCLI_EMBEDDINGS_OLLAMA_URL`, `MINDCLI_EMBEDDINGS_OPENAI_KEY`
 - Markdown: `MINDCLI_SOURCES_MARKDOWN_ENABLED`, `MINDCLI_SOURCES_MARKDOWN_PATHS`, `MINDCLI_SOURCES_MARKDOWN_EXTENSIONS`, `MINDCLI_SOURCES_MARKDOWN_IGNORE`
 - PDF: `MINDCLI_SOURCES_PDF_ENABLED`, `MINDCLI_SOURCES_PDF_PATHS`, plus `MINDCLI_SOURCES_PDF_OCR_ENABLED`, `MINDCLI_SOURCES_PDF_OCR_COMMAND`, `MINDCLI_SOURCES_PDF_OCR_RENDERER`, `MINDCLI_SOURCES_PDF_OCR_LANGUAGES`, `MINDCLI_SOURCES_PDF_OCR_MAX_PAGES`, `MINDCLI_SOURCES_PDF_OCR_TIMEOUT_SECONDS`, `MINDCLI_SOURCES_PDF_OCR_MIN_TEXT_CHARS`
@@ -278,7 +286,6 @@ search:
 
 indexing:
   workers: 4
-  watch: true
 
 storage:
   path: ~/.local/share/mindcli
