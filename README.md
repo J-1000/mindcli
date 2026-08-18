@@ -64,11 +64,11 @@ mindcli
 ```bash
 mindcli                                      # Start the TUI
 mindcli index                                # Index all configured sources
-mindcli index -paths ~/notes                 # Index specific paths
+mindcli index -paths ~/notes                 # Override Markdown paths for this run
 mindcli index -watch                         # Index then watch for changes
 mindcli index -force                         # Re-index, ignoring unchanged-file checks
 mindcli reindex                              # Full rebuild (e.g. after model change)
-mindcli reindex -paths ~/notes               # Full rebuild for specific paths
+mindcli reindex -paths ~/notes               # Full rebuild with Markdown path override
 mindcli watch                                # Watch directories for changes
 mindcli search "Go concurrency"              # Search and print results
 mindcli search 'tag:project after:2026-07-01 "launch plan"'
@@ -115,6 +115,10 @@ mindcli help                                 # Show help
 
 Run `mindcli help`, `mindcli export -h`, or a subcommand without required
 arguments to see command-specific usage.
+
+For `index` and `reindex`, `-paths` replaces only the configured Markdown
+paths. It is not a global source filter: every other enabled source still runs
+with its configured paths and settings.
 
 ## Keyboard Shortcuts
 
