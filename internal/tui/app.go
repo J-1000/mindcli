@@ -67,11 +67,13 @@ type Model struct {
 	browsingCollections bool                  // true when browsing collections list
 	collections         []*storage.Collection // loaded collections
 	collectionCounts    map[string]int        // doc count per collection ID
-	collectionCursor    int                   // cursor in collections list
-	prevResults         []*storage.Document   // saved results before browsing
-	streaming           bool                  // true while streaming LLM answer
-	streamCh            chan streamChunkMsg   // channel for streaming tokens
-	streamCancel        context.CancelFunc    // cancel in-flight stream
+	collectionNewCounts map[string]int
+	collectionDocuments map[string][]*storage.Document
+	collectionCursor    int                 // cursor in collections list
+	prevResults         []*storage.Document // saved results before browsing
+	streaming           bool                // true while streaming LLM answer
+	streamCh            chan streamChunkMsg // channel for streaming tokens
+	streamCancel        context.CancelFunc  // cancel in-flight stream
 
 	// reindex runs a full index pass; nil disables in-app indexing.
 	reindex  func(context.Context) (indexed int, errs int, err error)
@@ -315,10 +317,15 @@ type errMsg struct {
 type collectionsLoadedMsg struct {
 	collections []*storage.Collection
 	counts      map[string]int
+	newCounts   map[string]int
+	documents   map[string][]*storage.Document
 }
 
 type collectionDocsLoadedMsg struct {
-	docs []*storage.Document
+	docs           []*storage.Document
+	collectionID   string
+	collectionName string
+	newCount       int
 }
 
 type relatedResultsMsg struct {
@@ -489,6 +496,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case collectionsLoadedMsg:
 		m.collections = msg.collections
 		m.collectionCounts = msg.counts
+		m.collectionNewCounts = msg.newCounts
+		m.collectionDocuments = msg.documents
 		m.collectionCursor = 0
 		if len(msg.collections) == 0 {
 			m.statusMsg = "No collections found"
@@ -503,7 +512,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.results = msg.docs
 		m.relatedReasons = nil
 		m.cursor = 0
-		m.statusMsg = fmt.Sprintf("%d documents in collection", len(msg.docs))
+		m.statusMsg = fmt.Sprintf("%d documents in collection %s", len(msg.docs), msg.collectionName)
+		if msg.newCount > 0 {
+			m.statusMsg += fmt.Sprintf(" (%d new since last view)", msg.newCount)
+		}
+		if m.collectionNewCounts != nil {
+			m.collectionNewCounts[msg.collectionID] = 0
+		}
 		m.statusIsErr = false
 		m.updatePreviewContent()
 		return m, nil
@@ -722,15 +737,50 @@ func (m Model) updateResults(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusIsErr = false
 		return m, func() tea.Msg {
 			ctx := context.Background()
+			collectionModel := m
+			collectionModel.sourceFilter = ""
 			cols, err := m.db.ListCollections(ctx)
 			if err != nil {
 				return errMsg{err}
 			}
 			counts := make(map[string]int, len(cols))
+			newCounts := make(map[string]int, len(cols))
+			documents := make(map[string][]*storage.Document)
 			for _, c := range cols {
-				counts[c.ID], _ = m.db.CountCollectionDocuments(ctx, c.ID)
+				if strings.TrimSpace(c.Query) == "" {
+					count, err := m.db.CountCollectionDocuments(ctx, c.ID)
+					if err != nil {
+						return errMsg{err}
+					}
+					counts[c.ID] = count
+					after := time.Time{}
+					if c.LastViewedAt != nil {
+						after = *c.LastViewedAt
+					}
+					newCounts[c.ID], err = m.db.CountCollectionDocumentsAddedAfter(ctx, c.ID, after)
+					if err != nil {
+						return errMsg{err}
+					}
+					continue
+				}
+				message := collectionModel.searchDocuments(c.Query, true)()
+				switch result := message.(type) {
+				case searchResultsMsg:
+					documents[c.ID] = result.docs
+					counts[c.ID] = len(result.docs)
+					ids := documentIDs(result.docs)
+					unseen, err := m.db.FilterUnseenCollectionDocumentIDs(ctx, c.ID, ids)
+					if err != nil {
+						return errMsg{err}
+					}
+					newCounts[c.ID] = len(unseen)
+				case errMsg:
+					return result
+				default:
+					return errMsg{fmt.Errorf("loading smart collection %q", c.Name)}
+				}
 			}
-			return collectionsLoadedMsg{collections: cols, counts: counts}
+			return collectionsLoadedMsg{collections: cols, counts: counts, newCounts: newCounts, documents: documents}
 		}
 
 	case key.Matches(msg, m.keys.Collection):
@@ -913,11 +963,18 @@ func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Enter):
 		if m.collectionCursor < len(m.collections) {
 			col := m.collections[m.collectionCursor]
-			// Smart collection: run the saved query instead of listing members.
+			newCount := m.collectionNewCounts[col.ID]
+			// Smart collection results were resolved while loading activity so the
+			// same bounded set can be marked viewed without a second query.
 			if strings.TrimSpace(col.Query) != "" {
-				m.browsingCollections = false
+				docs := append([]*storage.Document(nil), m.collectionDocuments[col.ID]...)
 				m.searchInput.SetValue(col.Query)
-				return m, m.searchDocuments(col.Query, false)
+				return m, func() tea.Msg {
+					if err := m.db.MarkCollectionViewed(context.Background(), col.ID, documentIDs(docs), time.Now()); err != nil {
+						return errMsg{err}
+					}
+					return collectionDocsLoadedMsg{docs: docs, collectionID: col.ID, collectionName: col.Name, newCount: newCount}
+				}
 			}
 			return m, func() tea.Msg {
 				ctx := context.Background()
@@ -925,7 +982,10 @@ func (m Model) updateBrowseCollections(msg tea.KeyMsg) (Model, tea.Cmd) {
 				if err != nil {
 					return errMsg{err}
 				}
-				return collectionDocsLoadedMsg{docs}
+				if err := m.db.MarkCollectionViewed(ctx, col.ID, documentIDs(docs), time.Now()); err != nil {
+					return errMsg{err}
+				}
+				return collectionDocsLoadedMsg{docs: docs, collectionID: col.ID, collectionName: col.Name, newCount: newCount}
 			}
 		}
 		return m, nil
@@ -1271,6 +1331,16 @@ func truncateRunes(value string, limit int) string {
 	return string(runes[:limit])
 }
 
+func documentIDs(documents []*storage.Document) []string {
+	ids := make([]string, 0, len(documents))
+	for _, document := range documents {
+		if document != nil {
+			ids = append(ids, document.ID)
+		}
+	}
+	return ids
+}
+
 func (m *Model) answerCandidates(results []*storage.Document) []*storage.Document {
 	seen := make(map[string]bool)
 	excluded := make(map[string]bool)
@@ -1550,7 +1620,7 @@ func (m Model) renderCollectionsList(width, height int) string {
 
 	for i := start; i < end; i++ {
 		col := m.collections[i]
-		label := fmt.Sprintf("%s (%d docs)", col.Name, m.collectionCounts[col.ID])
+		label := fmt.Sprintf("%s (%d docs, %d new)", col.Name, m.collectionCounts[col.ID], m.collectionNewCounts[col.ID])
 		if len(label) > width-4 {
 			label = label[:width-7] + "..."
 		}
