@@ -79,6 +79,15 @@ func NewIndexer(db *storage.DB, searchIndex *search.BleveIndex, vectors *storage
 		))
 	}
 
+	if cfg.Sources.HTML.Enabled {
+		srcs = append(srcs, sources.NewHTMLSource(
+			cfg.Sources.HTML.Paths,
+			cfg.Sources.HTML.Ignore,
+			cfg.Sources.HTML.MaxFileBytes,
+			cfg.Sources.HTML.MaxDecompressedBytes,
+		))
+	}
+
 	// Add email source if enabled
 	if cfg.Sources.Email.Enabled {
 		emailSrc := sources.NewEmailSource(
